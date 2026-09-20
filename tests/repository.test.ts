@@ -76,6 +76,20 @@ describe("transactional receipt persistence", () => {
     expect(listReceipts(db)).toHaveLength(1);
   });
 
+  it("lists receipts in reverse chronological purchase order", () => {
+    const older = validRequest();
+    older.clientMutationId = crypto.randomUUID();
+    older.draft.purchasedDate = "2026-08-10";
+    const newer = validRequest();
+    newer.clientMutationId = crypto.randomUUID();
+    newer.draft.purchasedDate = "2026-09-20";
+
+    const olderId = saveReceipt(db, older);
+    const newerId = saveReceipt(db, newer);
+
+    expect(listReceipts(db).map((entry) => entry.id)).toEqual([newerId, olderId]);
+  });
+
   it("rolls back a confirmed receipt with unresolved arithmetic", () => {
     const request = validRequest();
     request.draft.totalMinor = 599;

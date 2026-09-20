@@ -28,7 +28,7 @@ type Theme = "light" | "dark";
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === "dark" ? "dark" : "light");
-  const [screen, setScreen] = useState<Screen>("capture");
+  const [screen, setScreen] = useState<Screen>("history");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -164,7 +164,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="brand" onClick={resetCapture} aria-label="Zur Startseite">
+        <button className="brand" onClick={() => navigate("history")} aria-label="Zur Übersicht">
           <span className="brand-mark"><ReceiptIcon /></span>
           <span><strong>Itemly</strong><small>Deine Einkäufe, klar erfasst.</small></span>
         </button>
@@ -179,7 +179,7 @@ export default function App() {
             <span className="theme-toggle-track"><span>{theme === "dark" ? <MoonIcon /> : <SunIcon />}</span></span>
             <small>{theme === "dark" ? "Dunkel" : "Hell"}</small>
           </button>
-          <button className="history-link" onClick={() => navigate("history")}><HistoryIcon /> Einkäufe</button>
+          {screen !== "history" && <button className="history-link" onClick={() => navigate("history")}><HistoryIcon /> Einkäufe</button>}
         </div>
       </header>
 
@@ -640,23 +640,34 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
 
   return (
     <section className="page history-page">
-      <div className="history-heading"><div><div className="eyebrow">Archiv</div><h1>Deine Einkäufe</h1><p className="lead">Alle gespeicherten Bons, chronologisch sortiert.</p></div><button className="button primary" onClick={onNew}>＋ Neuer Bon</button></div>
+      <div className="history-heading">
+        <div>
+          <div className="eyebrow">Übersicht</div>
+          <h1>Deine Bons</h1>
+          <p className="lead">Alle Einkäufe auf einen Blick – die neuesten stehen oben.</p>
+        </div>
+        <div className="history-summary" aria-live="polite">
+          <strong>{loading ? "…" : entries.length}</strong>
+          <span>{search ? "Treffer" : entries.length === 1 ? "gespeicherter Bon" : "gespeicherte Bons"}</span>
+        </div>
+      </div>
       <label className="search-box"><SearchIcon /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Händler, Produkt oder Kategorie suchen" /></label>
       {error && <div className="notice error"><AlertIcon /><p>{error}</p></div>}
       {loading ? <div className="loading-list"><span className="spinner" /> Einkäufe werden geladen …</div> : entries.length === 0 ? (
-        <div className="empty-card history-empty"><ReceiptLargeIcon /><h2>{search ? "Keine Treffer" : "Noch keine Einkäufe"}</h2><p>{search ? "Versuche einen anderen Suchbegriff." : "Dein erster erfasster Bon erscheint hier."}</p>{!search && <button className="button primary" onClick={onNew}>Ersten Bon erfassen</button>}</div>
+        <div className="empty-card history-empty"><ReceiptLargeIcon /><h2>{search ? "Keine Treffer" : "Noch keine Bons"}</h2><p>{search ? "Versuche einen anderen Suchbegriff." : "Tippe unten rechts auf „Neuer Bon“, um deinen ersten Einkauf zu erfassen."}</p></div>
       ) : (
         <div className="history-list">
           {entries.map((entry) => (
             <button className="history-card" key={entry.id} onClick={() => onOpen(entry.id)}>
               <span className="merchant-avatar">{(entry.merchantName ?? "?").slice(0, 1).toUpperCase()}</span>
-              <span className="history-copy"><strong>{entry.merchantName ?? "Händler unbekannt"}</strong><small>{entry.purchasedDate ?? new Date(entry.scannedAt).toLocaleDateString("de-DE")} · {entry.positionCount} Positionen</small><em className={entry.validationState}>{statusText(entry.validationState, entry.status)}</em></span>
+              <span className="history-copy"><strong>{entry.merchantName ?? "Händler unbekannt"}</strong><small><time dateTime={entry.purchasedDate ?? entry.scannedAt}>{formatReceiptDate(entry.purchasedDate, entry.scannedAt)}</time> · {entry.positionCount} {entry.positionCount === 1 ? "Position" : "Positionen"}</small><em className={entry.validationState}>{statusText(entry.validationState, entry.status)}</em></span>
               <span className="history-total"><strong>{formatMoney(entry.totalMinor, entry.currency)}</strong><ChevronIcon /></span>
             </button>
           ))}
         </div>
       )}
       <a className="backup-link" href="/api/backup"><DownloadIcon /> Vollständiges Backup herunterladen</a>
+      <button className="receipt-fab" onClick={onNew} aria-label="Neuen Bon hinzufügen"><span aria-hidden="true">＋</span><strong>Neuer Bon</strong></button>
     </section>
   );
 }
@@ -754,6 +765,18 @@ function statusText(validation: HistoryEntry["validationState"], status: History
   if (validation === "balanced") return "Geprüft";
   if (validation === "discrepancy") return "Abweichung";
   return "Unvollständig";
+}
+
+function formatReceiptDate(purchasedDate: string | null, scannedAt: string): string {
+  const value = purchasedDate ? `${purchasedDate}T12:00:00` : scannedAt;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return purchasedDate ?? "Datum unbekannt";
+  return new Intl.DateTimeFormat("de-DE", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric"
+  }).format(date);
 }
 
 function Icon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {

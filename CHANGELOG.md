@@ -4,6 +4,14 @@ Alle bedeutenden Änderungen an Itemly werden in dieser Datei dokumentiert.
 
 Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), und Versionen folgen [Semantic Versioning](https://semver.org/lang/de/).
 
+## [Unveröffentlicht]
+
+### Geändert
+
+- Die Bonübersicht ist jetzt die Startseite und zeigt Einkäufe mit den neuesten Einträgen zuerst.
+- Ein schwebender „Neuer Bon“-Button startet die Erfassung von jeder Übersichtsposition aus.
+- Karten, Datumsdarstellung, Leerzustand und responsive Abstände wurden für eine intuitivere mobile Navigation überarbeitet.
+
 ## [0.1.0] - 2026-09-20
 
 ### Hinzugefügt
