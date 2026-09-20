@@ -1,0 +1,19 @@
+{
+  "name": "Itemly – Receipt Tracker",
+  "short_name": "Itemly",
+  "description": "Kassenbons erfassen, prüfen und wiederfinden",
+  "lang": "de",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#176b4d",
+  "background_color": "#f5f3ed",
+  "icons": [
+    {
+      "src": "/receipt-mark.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

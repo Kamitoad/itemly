@@ -1,0 +1,6 @@
+allowBuilds:
+  esbuild: true
+
+overrides:
+  media-typer: 1.1.1
+  type-is: 2.1.0

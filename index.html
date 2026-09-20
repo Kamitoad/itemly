@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#176b4d" />
+    <meta name="description" content="Kassenbons erfassen, prüfen und sicher speichern" />
+    <link rel="icon" href="/receipt-mark.svg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem("itemly-theme") ?? localStorage.getItem("receipt-tracker-theme");
+          const theme = saved === "light" || saved === "dark"
+            ? saved
+            : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          document.documentElement.dataset.theme = theme;
+          document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#0a1117" : "#176b4d";
+        } catch {}
+      })();
+    </script>
+    <title>Itemly – Receipt Tracker</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

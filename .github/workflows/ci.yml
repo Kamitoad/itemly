@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
+      - name: pnpm einrichten
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+      - name: Node.js einrichten
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Abhängigkeiten installieren
+        run: pnpm install --frozen-lockfile
+      - name: Typen und Tests prüfen
+        run: pnpm check
+      - name: Produktions-Build erstellen
+        run: pnpm build
