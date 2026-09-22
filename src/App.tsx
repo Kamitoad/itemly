@@ -10,6 +10,7 @@ import {
   type ReceiptItem
 } from "../shared/receipt";
 import { chatGptReceiptPrompt } from "../shared/receipt-import";
+import { copyText } from "./clipboard";
 import {
   extractReceipt,
   importChatGptReceipt,
@@ -325,18 +326,25 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
   onImport: (content: string) => Promise<void>;
 }) {
   const imageRef = useRef<HTMLInputElement>(null);
+  const promptDetailsRef = useRef<HTMLDetailsElement>(null);
+  const promptTextRef = useRef<HTMLTextAreaElement>(null);
   const [content, setContent] = useState("");
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function copyPrompt() {
-    try {
-      await navigator.clipboard.writeText(chatGptReceiptPrompt);
+    if (await copyText(chatGptReceiptPrompt)) {
       setCopyState("copied");
-    } catch {
-      setCopyState("failed");
+      return;
     }
+
+    setCopyState("failed");
+    if (promptDetailsRef.current) promptDetailsRef.current.open = true;
+    requestAnimationFrame(() => {
+      promptTextRef.current?.focus();
+      promptTextRef.current?.select();
+    });
   }
 
   async function submit() {
@@ -360,12 +368,18 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
 
       <section className="import-step-card">
         <div className="import-step-heading"><span>1</span><div><h2>Vorlage kopieren</h2><p>Füge diese Anweisung zusammen mit deinem Bonbild in ChatGPT ein.</p></div></div>
-        <details className="prompt-preview">
+        <details ref={promptDetailsRef} className="prompt-preview">
           <summary>Vorlage anzeigen</summary>
-          <pre>{chatGptReceiptPrompt}</pre>
+          <textarea
+            ref={promptTextRef}
+            aria-label="ChatGPT-Vorlage"
+            readOnly
+            value={chatGptReceiptPrompt}
+            onFocus={(event) => event.currentTarget.select()}
+          />
         </details>
         <button className="button secondary" onClick={copyPrompt}><CodeIcon /> {copyState === "copied" ? "Vorlage kopiert" : "Vorlage kopieren"}</button>
-        {copyState === "failed" && <p className="inline-error">Kopieren war nicht möglich. Öffne die Vorlage und kopiere sie manuell.</p>}
+        {copyState === "failed" && <p className="inline-error">Direktes Kopieren wurde vom Browser blockiert. Die Vorlage ist markiert – halte den Text gedrückt und tippe auf „Kopieren“.</p>}
       </section>
 
       <section className="import-step-card">
