@@ -90,6 +90,21 @@ describe("transactional receipt persistence", () => {
     expect(listReceipts(db).map((entry) => entry.id)).toEqual([newerId, olderId]);
   });
 
+  it("lists purchases on the same day by latest purchase time first", () => {
+    const morning = validRequest();
+    morning.clientMutationId = crypto.randomUUID();
+    morning.draft.purchasedTime = "08:15";
+    const evening = validRequest();
+    evening.clientMutationId = crypto.randomUUID();
+    evening.draft.purchasedTime = "19:45";
+
+    const morningId = saveReceipt(db, morning);
+    const eveningId = saveReceipt(db, evening);
+
+    expect(listReceipts(db).map((entry) => entry.id)).toEqual([eveningId, morningId]);
+    expect(listReceipts(db)[0]?.purchasedTime).toBe("19:45");
+  });
+
   it("rolls back a confirmed receipt with unresolved arithmetic", () => {
     const request = validRequest();
     request.draft.totalMinor = 599;

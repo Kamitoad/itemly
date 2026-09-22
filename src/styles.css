@@ -265,6 +265,11 @@ h2, h3, p { margin-top: 0; }
 .search-box { height: 54px; border: 1px solid var(--line); border-radius: 16px; background: white; display: flex; align-items: center; gap: 10px; padding: 0 16px; margin: 28px 0 18px; box-shadow: 0 8px 22px rgba(35,52,44,.04); }
 .search-box svg { color: var(--green); }
 .search-box input { border: 0; outline: 0; min-width: 0; flex: 1; background: transparent; }
+.history-groups { display: flex; flex-direction: column; gap: 30px; }
+.history-group { min-width: 0; }
+.history-date-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 0 4px 10px; margin-bottom: 11px; border-bottom: 1px solid var(--line); }
+.history-date-heading h2 { margin: 0; font-size: 18px; letter-spacing: -.01em; }
+.history-date-heading span { color: var(--muted); font-size: 10px; font-weight: 750; white-space: nowrap; }
 .history-list { display: flex; flex-direction: column; gap: 11px; }
 .history-card { width: 100%; min-height: 96px; display: grid; grid-template-columns: 52px minmax(0,1fr) auto; gap: 15px; align-items: center; text-align: left; padding: 15px 17px; background: var(--paper); border: 1px solid var(--line); border-radius: 20px; cursor: pointer; box-shadow: 0 7px 24px rgba(36,54,45,.035); transition: transform .15s, box-shadow .15s, border-color .15s; }
 .history-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--green) 32%, var(--line)); box-shadow: 0 15px 32px rgba(36,54,45,.09); }

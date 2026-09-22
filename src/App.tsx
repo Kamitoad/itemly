@@ -11,6 +11,7 @@ import {
 } from "../shared/receipt";
 import { chatGptReceiptPrompt } from "../shared/receipt-import";
 import { copyText } from "./clipboard";
+import { groupHistoryEntries } from "./history";
 import {
   extractReceipt,
   importChatGptReceipt,
@@ -643,6 +644,7 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const groups = useMemo(() => groupHistoryEntries(entries), [entries]);
 
   useEffect(() => {
     const handle = window.setTimeout(() => {
@@ -670,13 +672,23 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
       {loading ? <div className="loading-list"><span className="spinner" /> Einkäufe werden geladen …</div> : entries.length === 0 ? (
         <div className="empty-card history-empty"><ReceiptLargeIcon /><h2>{search ? "Keine Treffer" : "Noch keine Bons"}</h2><p>{search ? "Versuche einen anderen Suchbegriff." : "Tippe unten rechts auf „Neuer Bon“, um deinen ersten Einkauf zu erfassen."}</p></div>
       ) : (
-        <div className="history-list">
-          {entries.map((entry) => (
-            <button className="history-card" key={entry.id} onClick={() => onOpen(entry.id)}>
-              <span className="merchant-avatar">{(entry.merchantName ?? "?").slice(0, 1).toUpperCase()}</span>
-              <span className="history-copy"><strong>{entry.merchantName ?? "Händler unbekannt"}</strong><small><time dateTime={entry.purchasedDate ?? entry.scannedAt}>{formatReceiptDate(entry.purchasedDate, entry.scannedAt)}</time> · {entry.positionCount} {entry.positionCount === 1 ? "Position" : "Positionen"}</small><em className={entry.validationState}>{statusText(entry.validationState, entry.status)}</em></span>
-              <span className="history-total"><strong>{formatMoney(entry.totalMinor, entry.currency)}</strong><ChevronIcon /></span>
-            </button>
+        <div className="history-groups">
+          {groups.map((group) => (
+            <section className="history-group" key={group.key} aria-labelledby={`history-date-${group.key}`}>
+              <div className="history-date-heading">
+                <h2 id={`history-date-${group.key}`}>{group.label}</h2>
+                <span>{group.entries.length} {group.entries.length === 1 ? "Bon" : "Bons"}</span>
+              </div>
+              <div className="history-list">
+                {group.entries.map((entry) => (
+                  <button className="history-card" key={entry.id} onClick={() => onOpen(entry.id)}>
+                    <span className="merchant-avatar">{(entry.merchantName ?? "?").slice(0, 1).toUpperCase()}</span>
+                    <span className="history-copy"><strong>{entry.merchantName ?? "Händler unbekannt"}</strong><small>{formatHistoryTime(entry.purchasedTime, entry.scannedAt)} · {entry.positionCount} {entry.positionCount === 1 ? "Position" : "Positionen"}</small><em className={entry.validationState}>{statusText(entry.validationState, entry.status)}</em></span>
+                    <span className="history-total"><strong>{formatMoney(entry.totalMinor, entry.currency)}</strong><ChevronIcon /></span>
+                  </button>
+                ))}
+              </div>
+            </section>
           ))}
         </div>
       )}
@@ -781,16 +793,11 @@ function statusText(validation: HistoryEntry["validationState"], status: History
   return "Unvollständig";
 }
 
-function formatReceiptDate(purchasedDate: string | null, scannedAt: string): string {
-  const value = purchasedDate ? `${purchasedDate}T12:00:00` : scannedAt;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return purchasedDate ?? "Datum unbekannt";
-  return new Intl.DateTimeFormat("de-DE", {
-    weekday: "short",
-    day: "2-digit",
-    month: "short",
-    year: "numeric"
-  }).format(date);
+function formatHistoryTime(purchasedTime: string | null, scannedAt: string): string {
+  if (purchasedTime && /^\d{2}:\d{2}(?::\d{2})?$/.test(purchasedTime)) return `${purchasedTime.slice(0, 5)} Uhr`;
+  const scanned = new Date(scannedAt);
+  if (Number.isNaN(scanned.getTime())) return "Uhrzeit unbekannt";
+  return `${new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(scanned)} Uhr`;
 }
 
 function Icon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {

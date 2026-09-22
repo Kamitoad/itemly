@@ -332,17 +332,23 @@ export function getReceipt(db: ReceiptDatabase, id: string) {
 
 export function listReceipts(db: ReceiptDatabase, search = "") {
   const pattern = `%${search.trim()}%`;
-  const rows = db.prepare(`SELECT DISTINCT r.id, r.merchant_name_snapshot, r.purchased_date, r.scanned_at,
+  const rows = db.prepare(`SELECT DISTINCT r.id, r.merchant_name_snapshot, r.purchased_date, r.purchased_time, r.scanned_at,
       r.total_minor, r.currency, r.position_count, r.status, r.validation_state
     FROM receipts r
     LEFT JOIN receipt_items i ON i.receipt_id = r.id
     WHERE (? = '' OR r.merchant_name_snapshot LIKE ? OR i.normalized_name LIKE ? OR i.category_snapshot LIKE ?)
-    ORDER BY COALESCE(r.purchased_date, substr(r.scanned_at, 1, 10)) DESC, r.scanned_at DESC`)
+    ORDER BY COALESCE(r.purchased_date, substr(r.scanned_at, 1, 10)) DESC,
+      CASE
+        WHEN r.purchased_date IS NOT NULL THEN COALESCE(r.purchased_time, '00:00:00')
+        ELSE substr(r.scanned_at, 12, 8)
+      END DESC,
+      r.scanned_at DESC`)
     .all(search.trim(), pattern, pattern, pattern) as Row[];
   return rows.map((row) => ({
     id: row.id,
     merchantName: row.merchant_name_snapshot,
     purchasedDate: row.purchased_date,
+    purchasedTime: row.purchased_time,
     scannedAt: row.scanned_at,
     totalMinor: row.total_minor,
     currency: row.currency,

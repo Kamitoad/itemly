@@ -11,6 +11,7 @@ export interface HistoryEntry {
   id: string;
   merchantName: string | null;
   purchasedDate: string | null;
+  purchasedTime: string | null;
   scannedAt: string;
   totalMinor: number | null;
   currency: string;
