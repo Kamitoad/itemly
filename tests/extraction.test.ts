@@ -120,4 +120,24 @@ describe("pasted ChatGPT receipt JSON", () => {
     expect(draft.merchantName).toBe("Walmart");
     expect(draft.fieldSources.timezone).toBe("uncertain");
   });
+
+  it("normalizes an overlong item uncertainty without rejecting the receipt", () => {
+    const longUncertainty = `The printed product identifier cannot be read with certainty because ${"the image is blurry ".repeat(8)}`;
+    const content = JSON.stringify({
+      currency: "EUR",
+      items: [{
+        normalizedName: "Artikel",
+        uncertainties: [longUncertainty, " quantity ", "quantity", ""]
+      }]
+    });
+
+    const { draft, rawResult } = parsePastedReceiptJson(content);
+
+    expect(draft.items[0]?.uncertainties).toHaveLength(2);
+    expect(draft.items[0]?.uncertainties[0]).toHaveLength(100);
+    expect(draft.items[0]?.uncertainties[0]).toMatch(/\.\.\.$/);
+    expect(draft.items[0]?.uncertainties[1]).toBe("quantity");
+    expect(draft.items[0]?.source).toBe("uncertain");
+    expect((rawResult as { items: Array<{ uncertainties: string[] }> }).items[0]?.uncertainties[0]).toBe(longUncertainty);
+  });
 });

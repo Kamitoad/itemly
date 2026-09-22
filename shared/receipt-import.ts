@@ -26,7 +26,10 @@ const importedItemSchema = z.object({
   taxCode: z.string().max(500).nullable().default(null),
   taxMinor: z.number().int().safe().nullable().default(null),
   notes: z.string().max(500).nullable().default(null),
-  uncertainties: z.array(z.string().max(100)).max(20).default([])
+  // AI output is untrusted and can contain an explanation instead of the
+  // requested short field name. Accept a bounded value here and normalize it
+  // before it reaches the stricter application schema.
+  uncertainties: z.array(z.string().max(2000)).max(20).default([])
 });
 
 const importedAdjustmentSchema = z.object({
@@ -129,7 +132,7 @@ export const chatGptReceiptPrompt = [
   "sourceLine ist immer die gedruckte Originalzeile als String oder null, niemals eine Zeilennummer.",
   "Gib normale Leerzeichen und Unterstriche aus. Verwende keine HTML-Entities wie &#x20; und keine Markdown-Escapes wie \\_ oder \\[.",
   "fieldSources enthält nur die Werte extracted, derived, uncertain, not_visible oder not_applicable – keine Zitate oder Erklärungen.",
-  "Trage unsichere JSON-Pfade in uncertaintyFields ein und Unsicherheiten eines Artikels zusätzlich in dessen uncertainties.",
+  "Trage unsichere JSON-Pfade in uncertaintyFields ein. Nutze in items[].uncertainties ausschließlich kurze betroffene Feldnamen wie sku, quantity oder lineTotalMinor (maximal 100 Zeichen je Eintrag), keine Erklärungen oder ganzen Sätze.",
   `Nutze exakt diese Struktur: ${JSON.stringify(receiptImportShape, null, 2)}`
 ].join("\n\n");
 
@@ -149,6 +152,14 @@ function validTime(value: string | null): string | null {
 
 function normalizeLineBreaks(value: string | null): string | null {
   return value?.replace(/\\n/g, "\n") ?? null;
+}
+
+function normalizeItemUncertainties(values: string[]): string[] {
+  return [...new Set(values
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => value.length <= 100 ? value : `${value.slice(0, 97).trimEnd()}...`)
+  )].slice(0, 20);
 }
 
 const provenanceValues = new Set<Provenance>([
@@ -196,16 +207,20 @@ export function normalizeImportedReceipt(extracted: ImportedReceipt): ReceiptDra
     purchasedDate: validDate(extracted.purchasedDate),
     purchasedTime: validTime(extracted.purchasedTime),
     taxTotalMinor: extracted.taxTotalMinor ?? derivedTaxTotal,
-    items: extracted.items.map((item, index) => ({
-      ...item,
-      id: createUuid(),
-      lineNumber: item.lineNumber ?? index + 1,
-      quantity: normalizeDecimal(item.quantity),
-      packageSize: normalizeDecimal(item.packageSize),
-      verified: false,
-      source: item.uncertainties.length > 0 ? "uncertain" : "extracted",
-      excluded: false
-    })),
+    items: extracted.items.map((item, index) => {
+      const uncertainties = normalizeItemUncertainties(item.uncertainties);
+      return {
+        ...item,
+        id: createUuid(),
+        lineNumber: item.lineNumber ?? index + 1,
+        quantity: normalizeDecimal(item.quantity),
+        packageSize: normalizeDecimal(item.packageSize),
+        uncertainties,
+        verified: false,
+        source: uncertainties.length > 0 ? "uncertain" : "extracted",
+        excluded: false
+      };
+    }),
     adjustments,
     fieldSources,
     notes: ""
