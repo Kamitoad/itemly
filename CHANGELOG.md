@@ -1,28 +1,29 @@
-# Änderungsverlauf
+# Changelog
 
-Alle bedeutenden Änderungen an Itemly werden in dieser Datei dokumentiert.
+All notable changes to Itemly are documented here.
 
-Das Format orientiert sich an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/), und Versionen folgen [Semantic Versioning](https://semver.org/lang/de/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unveröffentlicht]
+## [Unreleased]
 
-### Geändert
+### Changed
 
-- Die Bonübersicht ist jetzt die Startseite und zeigt Einkäufe mit den neuesten Einträgen zuerst.
-- Ein schwebender „Neuer Bon“-Button startet die Erfassung von jeder Übersichtsposition aus.
-- Karten, Datumsdarstellung, Leerzustand und responsive Abstände wurden für eine intuitivere mobile Navigation überarbeitet.
+- The receipt overview is now the home screen and lists purchases newest first.
+- A floating “New receipt” button starts capture from anywhere in the overview.
+- Cards, date display, empty states, and responsive spacing were refined for more intuitive mobile navigation.
+- Project documentation was standardized in English; the product UI remains German.
 
 ## [0.1.0] - 2026-09-20
 
-### Hinzugefügt
+### Added
 
-- mobiler Erfassungs-, Prüf- und Speicherablauf für Kassenbons
-- manuelle Erfassung, optionaler KI-Adapter und kostenloser ChatGPT-JSON-Import
-- robuste Bereinigung typischer Zwischenablage- und Markdown-Artefakte
-- SQLite-Persistenz mit Migration, Transaktionen, Idempotenz und Duplikathinweisen
-- Betragsabgleich für Artikel, Rabatte, Steuern, Gebühren und Pfand
-- Verlauf, Suche, Detailansicht, Exporte, Backups und Wiederherstellung
-- installierbare PWA mit hellem und dunklem Farbschema
-- automatisierte Schema-, Berechnungs-, Repository-, Backup- und Importtests
+- Mobile workflow to capture, review, and save receipts
+- Manual entry, optional AI adapter, and free ChatGPT JSON import
+- Robust cleanup of common clipboard and Markdown artifacts
+- SQLite persistence with migrations, transactions, idempotency, and duplicate warnings
+- Arithmetic checks for items, discounts, taxes, fees, and deposits
+- History, search, detail view, exports, backups, and restore
+- Installable PWA with light and dark themes
+- Automated tests for schemas, calculations, repositories, backups, and imports
 
 [0.1.0]: https://github.com/Kamitoad/itemly/releases/tag/v0.1.0

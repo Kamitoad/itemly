@@ -1,24 +1,24 @@
-# Sicherheitsrichtlinie
+# Security policy
 
-## Unterstützte Versionen
+## Supported versions
 
-Itemly befindet sich in einer frühen MVP-Phase. Sicherheitskorrekturen werden für die jeweils aktuelle Version auf dem `main`-Branch bereitgestellt.
+Itemly is in an early MVP stage. Security fixes are provided for the current version on the `main` branch.
 
-## Schwachstellen melden
+## Reporting a vulnerability
 
-Bitte veröffentliche mögliche Schwachstellen nicht als öffentliches Issue. Nutze stattdessen die private Sicherheitsmeldung unter:
+Do not disclose potential vulnerabilities in a public issue. Instead, use the private security advisory form:
 
 https://github.com/Kamitoad/itemly/security/advisories/new
 
-Beschreibe nach Möglichkeit die betroffene Version, die notwendigen Schritte zur Reproduktion, mögliche Auswirkungen und bekannte Gegenmaßnahmen. Veröffentliche keine echten Bonbilder, Einkaufsdaten oder Zugangsschlüssel.
+Where possible, include the affected version, reproduction steps, potential impact, and known mitigations. Do not share real receipt images, purchase data, or access keys.
 
-## Sicherheitsgrenzen von v0.1.0
+## Security boundaries in v0.1.0
 
-- Itemly ist für einen privaten Rechner oder ein vertrauenswürdiges Heimnetz ausgelegt.
-- Es existieren noch keine Benutzerkonten, Anmeldung oder Rechteverwaltung.
-- Der Server sollte nicht direkt aus dem öffentlichen Internet erreichbar sein.
-- API-Schlüssel gehören ausschließlich in die lokale `.env`-Datei und niemals in Browsercode, Commits oder Screenshots.
-- Bon- und KI-Ausgaben gelten als nicht vertrauenswürdige Daten und werden validiert.
-- Originalwerte und rechnerische Abweichungen werden sichtbar erhalten.
+- Itemly is designed for a private computer or trusted home network.
+- There are no user accounts, login, or role-based permissions yet.
+- Do not expose the server directly to the public internet.
+- Keep API keys in the local `.env` file, never in browser code, commits, or screenshots.
+- Receipt text and AI output are untrusted data and must be validated.
+- Original values and arithmetic discrepancies remain visible.
 
-Diese Grenzen sind Teil des aktuellen Designs und keine Zusage, dass ein öffentlicher Mehrbenutzerbetrieb sicher unterstützt wird.
+These limits describe the current design. They do not imply that public multi-user hosting is supported safely.

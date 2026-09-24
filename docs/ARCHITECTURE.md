@@ -1,49 +1,49 @@
-# Architektur
+# Architecture
 
-Itemly ist eine lokale Full-Stack-TypeScript-Anwendung mit austauschbaren Grenzen für Extraktion, Speicherung und Persistenz.
+Itemly is a local full-stack TypeScript application with replaceable boundaries for extraction, file storage, and persistence.
 
-## Komponenten
+## Components
 
-- `src/` enthält die React-Oberfläche, den mobilen Prüfablauf und den API-Client.
-- `shared/` enthält versionierte Zod-Schemas, Betragslogik und die Normalisierung importierter Daten.
-- `server/` enthält Express-Routen, Extraktionsadapter, SQLite-Zugriff, Backups und Wiederherstellung.
-- `server/migrations/` enthält unveränderliche, explizit angewendete SQLite-Migrationen.
-- `tests/` deckt Domänenlogik, Importgrenzen und Persistenzverhalten ab.
+- `src/` contains the React UI, mobile review flow, and API client.
+- `shared/` contains versioned Zod schemas, arithmetic rules, and normalization of imported data.
+- `server/` contains Express routes, extraction adapters, SQLite access, backups, and restore.
+- `server/migrations/` contains immutable, explicitly applied SQLite migrations.
+- `tests/` covers domain logic, import boundaries, and persistence behavior.
 
-## Datenfluss
+## Data flow
 
 ```text
-Bonbild oder manuelle Eingabe
-          │
-          ▼
-optionale Extraktion / JSON-Import
-          │
-          ▼
-Schema-Validierung und ungeprüfter Entwurf
-          │
-          ▼
-sichtbare Kontrolle und Betragsabgleich
-          │
-          ▼
-atomare SQLite-Speicherung + optionales Originalbild
+Receipt image or manual input
+            |
+            v
+Optional extraction / JSON import
+            |
+            v
+Schema validation and unverified draft
+            |
+            v
+Visible review and arithmetic reconciliation
+            |
+            v
+Atomic SQLite save + optional original image
 ```
 
-## Domänenregeln
+## Domain rules
 
-- Geld wird als ganzzahlige Minor Units gespeichert.
-- Mengen und Packungsgrößen bleiben exakte Dezimalstrings.
-- Gedruckte Summen werden nicht durch berechnete Werte überschrieben.
-- Ein bestätigter Einkauf muss vollständig bepreist und rechnerisch ausgeglichen sein.
-- Entwürfe dürfen unvollständig oder unausgeglichen sein.
-- Prüfhäkchen dokumentieren nur die menschliche Kontrolle.
-- Rohdaten aus Bon, OCR oder KI gelten immer als nicht vertrauenswürdig.
+- Store money as integer minor units.
+- Keep quantities and package sizes as exact decimal strings.
+- Never replace printed totals with calculated values.
+- A confirmed purchase must have complete prices and balanced arithmetic.
+- Drafts may be incomplete or unbalanced.
+- Verification checkboxes record human review only.
+- Always treat raw receipt, OCR, and AI output as untrusted data.
 
-## Persistenz
+## Persistence
 
-SQLite speichert Händler-Snapshots, Einkäufe, Artikel, Anpassungen, Anhänge und Audit-Ereignisse. Migrationen werden genau einmal in `_migrations` registriert. Bestätigte Speicherungen laufen in einer Transaktion und verwenden eine vom Client erzeugte Mutations-ID zur Idempotenz.
+SQLite stores merchant snapshots, purchases, items, adjustments, attachments, and audit events. Migrations are recorded exactly once in `_migrations`. Confirmed saves run in a transaction and use a client-generated mutation ID for idempotency.
 
-Originalbilder liegen inhaltsadressiert neben der Datenbank. Portable Backups enthalten Datenbank und Bilder, ändern aber nicht den Zustand eines externen Backup-Ziels.
+Original images are content-addressed and stored beside the database. Portable backups include the database and images, but do not modify any external backup destination.
 
-## Sicherheitsgrenze
+## Security boundary
 
-Die App besitzt in Version 0.1.0 keine Anmeldung. Das Netzwerk selbst ist daher die Vertrauensgrenze. Ein öffentlicher Betrieb benötigt einen vorgeschalteten Reverse Proxy mit HTTPS und Zugriffskontrolle.
+The app has no login in version 0.1.0, so the network itself is the trust boundary. Public hosting requires a reverse proxy with HTTPS and access control in front of Itemly.

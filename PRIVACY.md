@@ -1,39 +1,39 @@
-# Datenschutz und Datenfluss
+# Privacy and data flow
 
-Itemly ist eine selbst gehostete Anwendung ohne Benutzerkonten, Telemetrie oder Analyse-Skripte. Diese Datei beschreibt das Verhalten der Version 0.1.0. Wer Itemly verändert oder öffentlich betreibt, ist für die daraus entstehenden Datenflüsse selbst verantwortlich.
+Itemly is a self-hosted application without user accounts, telemetry, or analytics scripts. This document describes version 0.1.0. Anyone who modifies Itemly or operates it publicly is responsible for the resulting data flows.
 
-## Lokal verarbeitete Daten
+## Data processed locally
 
-Itemly kann folgende Informationen speichern:
+Itemly may store:
 
-- Bonbilder
-- Händler, Filiale, Adresse, Datum und Uhrzeit
-- Artikel, Mengen, Preise, Rabatte, Steuern, Pfand und Gebühren
-- Zahlungsart, Kartenmarke und höchstens die sichtbaren letzten vier Ziffern
-- Prüfstatus, Unsicherheiten, technische Herkunftsangaben und persönliche Notizen
+- Receipt images
+- Merchant, store, address, purchase date, and time
+- Items, quantities, prices, discounts, taxes, deposits, and fees
+- Payment method, card brand, and at most the visible last four card digits
+- Review status, uncertainties, technical source details, and personal notes
 
-Die Daten liegen standardmäßig im lokalen Verzeichnis `./data`. Strukturierte Daten werden in SQLite gespeichert; Bilder liegen im Unterordner `receipts/`. Der Browser speichert lediglich die gewählte Darstellung sowie den installierbaren PWA-Rahmen.
+By default, this data is stored in the local `./data` directory. Structured data is stored in SQLite; images are stored in `receipts/`. The browser stores only the chosen appearance and the installable PWA shell.
 
-## KI-Verarbeitung
+## AI processing
 
-KI ist optional.
+AI is optional.
 
-### Manueller und ChatGPT-JSON-Ablauf
+### Manual entry and ChatGPT JSON import
 
-Beim manuellen Ablauf sendet Itemly keine Bonbilder an einen KI-Anbieter. Beim ChatGPT-JSON-Ablauf kopiert der Benutzer eine Vorlage und lädt das Bild selbst in einen normalen ChatGPT-Chat hoch. Diese Übertragung findet außerhalb von Itemly statt und unterliegt den Bedingungen und Einstellungen des dort verwendeten Dienstes.
+During manual entry, Itemly does not send receipt images to an AI provider. For ChatGPT JSON import, the user copies a prompt template and uploads the image to a regular ChatGPT chat themselves. This transfer happens outside Itemly and is subject to that service's terms and settings.
 
-### Konfigurierter API-Anbieter
+### Configured API provider
 
-Wenn ein Betreiber einen OpenAI-kompatiblen Anbieter konfiguriert, sendet Itemly ein ausgewähltes Bild erst nach einem sichtbaren Hinweis zur Extraktion an diesen Anbieter. API-Schlüssel verbleiben auf dem Server und werden nicht an den Browser gesendet. Für Speicherung und Aufbewahrung beim Anbieter gelten dessen Bedingungen.
+If an operator configures an OpenAI-compatible provider, Itemly sends a selected image for extraction only after a visible notice. API keys remain on the server and are not sent to the browser. The provider's terms govern its storage and retention of submitted data.
 
-## Weitergabe und Tracking
+## Sharing and tracking
 
-Itemly enthält keine Werbung, Telemetrie oder eingebauten Analyse-Dienste. Ohne konfigurierten KI-Anbieter werden keine Einkaufsdaten durch Itemly an Dritte übertragen.
+Itemly contains no ads, telemetry, or built-in analytics. Without a configured AI provider, Itemly does not transmit purchase data to third parties.
 
-## Backups und Löschung
+## Backups and deletion
 
-Backups enthalten die vollständige SQLite-Datenbank und vorhandene Bonbilder. Sie sind daher genauso vertraulich wie das lokale Datenverzeichnis. Das Löschen oder Verschieben lokaler Daten und Backups liegt in der Verantwortung des Betreibers. Version 0.1.0 besitzt noch keine Löschfunktion in der Oberfläche.
+Backups contain the complete SQLite database and available receipt images. Treat them as confidential as the local data directory. The operator is responsible for deleting or moving local data and backups. Version 0.1.0 does not yet offer deletion in the UI.
 
-## Netzwerkbetrieb
+## Network use
 
-Version 0.1.0 besitzt keine Anmeldung oder Zugriffskontrolle. Der Server darf nur auf einem privaten Rechner oder in einem vertrauenswürdigen Netzwerk verwendet werden, sofern nicht eine geeignete Zugriffskontrolle vorgeschaltet wird.
+Version 0.1.0 has no login or access control. Run the server only on a private computer or trusted network unless suitable access protection is added in front of it.

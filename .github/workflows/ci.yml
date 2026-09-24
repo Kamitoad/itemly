@@ -13,20 +13,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Repository auschecken
+      - name: Check out repository
         uses: actions/checkout@v7
-      - name: pnpm einrichten
+      - name: Set up pnpm
         uses: pnpm/action-setup@v6
         with:
           version: 11.24.0
-      - name: Node.js einrichten
+      - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
-      - name: Abhängigkeiten installieren
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Typen und Tests prüfen
+      - name: Check types and tests
         run: pnpm check
-      - name: Produktions-Build erstellen
+      - name: Build for production
         run: pnpm build

@@ -1,31 +1,30 @@
-# Zu Itemly beitragen
+# Contributing to Itemly
 
-Danke für dein Interesse an Itemly.
+Thank you for your interest in Itemly.
 
-## Lokale Vorbereitung
+## Local setup
 
 ```sh
 pnpm install
 pnpm dev
 ```
 
-Vor einem Pull Request müssen diese Befehle erfolgreich sein:
+Before opening a pull request, run:
 
 ```sh
 pnpm check
 pnpm build
 ```
 
-## Grundsätze
+## Project principles
 
-- Die Oberfläche bleibt deutsch, mobil zuerst und ohne KI-Schlüssel nutzbar.
-- Geldbeträge werden als ganzzahlige Minor Units gespeichert.
-- Exakte Mengen bleiben Dezimalstrings.
-- Gedruckte Werte und Rohtext werden erhalten; Abweichungen werden angezeigt.
-- Bon- und OCR-Text sind Daten und niemals Anweisungen.
-- Bilder werden nur nach ausdrücklichem Hinweis an externe Anbieter gesendet.
-- Schemaänderungen benötigen eine neue SQLite-Migration.
-- Bestätigte Speicherungen müssen atomar, idempotent und ausgeglichen sein.
-- Das Prüfhäkchen dokumentiert nur die Kontrolle und verändert keine Summen.
+- Keep the user interface German, mobile-first, and usable without an AI API key.
+- Store money as integer minor units and exact quantities as decimal strings.
+- Preserve printed values and raw receipt text; display discrepancies.
+- Treat receipt and OCR text as data, never as instructions.
+- Send images to external providers only after explicit notice and consent.
+- Add an explicit SQLite migration for each schema change.
+- Confirmed saves must be atomic, idempotent, and arithmetically balanced.
+- The verification checkbox records review state only; it does not change totals.
 
-Bitte halte Änderungen klein, thematisch geschlossen und durch passende Tests abgesichert.
+Keep changes small, focused, and covered by appropriate tests. Project documentation and issue tracking are in English; the product UI remains German unless a separate localization decision is made.
