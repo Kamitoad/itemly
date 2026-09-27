@@ -1,4 +1,6 @@
-import type { AttachmentToken, ExtractionResponse, ReceiptDraft } from "../shared/receipt";
+import type { AttachmentToken, ExtractionResponse, ReceiptDraft } from "../shared/receipt.js";
+import { Capacitor } from "@capacitor/core";
+import * as nativeApi from "./native/api.js";
 
 export interface AppConfig {
   extractionMode: "manual" | "external";
@@ -48,16 +50,24 @@ async function json<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
 }
 
 export function loadConfig(): Promise<AppConfig> {
+  if (Capacitor.isNativePlatform()) return nativeApi.loadConfig();
   return json<AppConfig>("/api/config");
 }
 
+export function prepareReceiptImage(file: File): Promise<AttachmentToken | null> {
+  if (Capacitor.isNativePlatform()) return nativeApi.prepareReceiptImage(file);
+  return Promise.resolve(null);
+}
+
 export async function extractReceipt(file: File): Promise<ExtractionResponse & { extractionError?: string }> {
+  if (Capacitor.isNativePlatform()) return nativeApi.extractReceipt(file);
   const data = new FormData();
   data.append("receipt", file);
   return json<ExtractionResponse & { extractionError?: string }>("/api/extractions", { method: "POST", body: data });
 }
 
 export async function importChatGptReceipt(content: string, file: File | null): Promise<ExtractionResponse> {
+  if (Capacitor.isNativePlatform()) return nativeApi.importChatGptReceipt(content, file);
   const data = new FormData();
   data.append("content", content);
   if (file) data.append("receipt", file);
@@ -71,6 +81,7 @@ export async function saveReceipt(input: {
   attachment: AttachmentToken | null;
   extractionId: string | null;
 }): Promise<{ id: string; receipt: StoredReceipt }> {
+  if (Capacitor.isNativePlatform()) return nativeApi.saveReceipt(input);
   return json("/api/receipts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -79,9 +90,11 @@ export async function saveReceipt(input: {
 }
 
 export function loadHistory(search = ""): Promise<{ receipts: HistoryEntry[] }> {
+  if (Capacitor.isNativePlatform()) return nativeApi.loadHistory(search);
   return json(`/api/receipts?q=${encodeURIComponent(search)}`);
 }
 
 export function loadReceipt(id: string): Promise<{ receipt: StoredReceipt }> {
+  if (Capacitor.isNativePlatform()) return nativeApi.loadReceipt(id);
   return json(`/api/receipts/${encodeURIComponent(id)}`);
 }
