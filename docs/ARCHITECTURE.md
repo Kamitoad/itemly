@@ -47,3 +47,7 @@ Original images are content-addressed and stored beside the database. Portable b
 ## Security boundary
 
 The app has no login in version 0.1.0, so the network itself is the trust boundary. Public hosting requires a reverse proxy with HTTPS and access control in front of Itemly.
+
+## Proposed phone-local runtime
+
+The current server is not required by design for the future Android app, but it is required by the current implementation. [ADR 001](decisions/001-phone-local-android.md) records the proposed Android-first storage approach and the device prototype needed before that decision is final.
