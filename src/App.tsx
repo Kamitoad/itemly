@@ -11,7 +11,9 @@ import {
 } from "../shared/receipt";
 import { chatGptReceiptPrompt } from "../shared/receipt-import";
 import { copyText } from "./clipboard";
+import { Capacitor } from "@capacitor/core";
 import { groupHistoryEntries } from "./history";
+import { selectNativeImage } from "./native/image-picker";
 import {
   extractReceipt,
   importChatGptReceipt,
@@ -107,6 +109,19 @@ export default function App() {
       setImageError(error instanceof Error ? error.message : "Das Bonbild konnte nicht gelesen werden. Der JSON-Import ist ohne Bild möglich.");
     } finally {
       if (selectionId === fileSelectionId.current) setSelectingImage(false);
+    }
+  }
+
+  async function pickNativeImage(source: "camera" | "gallery") {
+    setSelectingImage(true);
+    setImageError(null);
+    try {
+      const selected = await selectNativeImage(source);
+      if (selected) await chooseFile(selected);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Das Bonbild konnte nicht ausgewählt werden.");
+    } finally {
+      setSelectingImage(false);
     }
   }
 
@@ -220,6 +235,8 @@ export default function App() {
             imageError={imageError}
             config={config}
             onChoose={chooseFile}
+            onPickNative={pickNativeImage}
+            nativePlatform={Capacitor.isNativePlatform()}
             onAnalyze={analyze}
             onJsonImport={() => navigate("json-import")}
             onManual={startManual}
@@ -232,6 +249,8 @@ export default function App() {
             selectingImage={selectingImage}
             imageError={imageError}
             onChoose={chooseFile}
+            onPickNative={pickNativeImage}
+            nativePlatform={Capacitor.isNativePlatform()}
             onBack={() => navigate("capture")}
             onImport={importFromChatGpt}
           />
@@ -295,6 +314,8 @@ function CaptureScreen({
   imageError,
   config,
   onChoose,
+  onPickNative,
+  nativePlatform,
   onAnalyze,
   onJsonImport,
   onManual
@@ -305,6 +326,8 @@ function CaptureScreen({
   imageError: string | null;
   config: AppConfig | null;
   onChoose: (file: File | null) => void;
+  onPickNative: (source: "camera" | "gallery") => void;
+  nativePlatform: boolean;
   onAnalyze: () => void;
   onJsonImport: () => void;
   onManual: () => void;
@@ -317,8 +340,10 @@ function CaptureScreen({
       <h1>Neuen Bon erfassen</h1>
       <p className="lead">Fotografiere deinen Kassenbon. Du kontrollierst jeden erkannten Wert, bevor etwas gespeichert wird.</p>
 
-      <input ref={cameraRef} className="visually-hidden" type="file" accept="image/*" capture="environment" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
-      <input ref={galleryRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+      {!nativePlatform && <>
+        <input ref={cameraRef} className="visually-hidden" type="file" accept="image/*" capture="environment" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+        <input ref={galleryRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+      </>}
 
       {previewUrl ? (
         <div className="capture-preview">
@@ -332,8 +357,8 @@ function CaptureScreen({
       )}
 
       <div className="capture-actions">
-        <button className="button primary large" disabled={selectingImage} onClick={() => cameraRef.current?.click()}><CameraIcon /> Foto aufnehmen</button>
-        <button className="button secondary large" disabled={selectingImage} onClick={() => galleryRef.current?.click()}><ImageIcon /> Bild aus Galerie wählen</button>
+        <button className="button primary large" disabled={selectingImage} onClick={() => nativePlatform ? onPickNative("camera") : cameraRef.current?.click()}><CameraIcon /> Foto aufnehmen</button>
+        <button className="button secondary large" disabled={selectingImage} onClick={() => nativePlatform ? onPickNative("gallery") : galleryRef.current?.click()}><ImageIcon /> Bild aus Galerie wählen</button>
       </div>
       {selectingImage && <p role="status">Bonbild wird lokal übernommen …</p>}
       {imageError && <div className="import-error" role="alert"><AlertIcon /><span>{imageError}</span></div>}
@@ -353,12 +378,14 @@ function CaptureScreen({
   );
 }
 
-function JsonImportScreen({ file, previewUrl, selectingImage, imageError, onChoose, onBack, onImport }: {
+function JsonImportScreen({ file, previewUrl, selectingImage, imageError, onChoose, onPickNative, nativePlatform, onBack, onImport }: {
   file: File | null;
   previewUrl: string | null;
   selectingImage: boolean;
   imageError: string | null;
   onChoose: (file: File | null) => void;
+  onPickNative: (source: "camera" | "gallery") => void;
+  nativePlatform: boolean;
   onBack: () => void;
   onImport: (content: string) => Promise<void>;
 }) {
@@ -421,9 +448,9 @@ function JsonImportScreen({ file, previewUrl, selectingImage, imageError, onChoo
 
       <section className="import-step-card">
         <div className="import-step-heading"><span>2</span><div><h2>Originalbon lokal ablegen</h2><p>Optional, aber empfohlen. Das Bild wird von Itemly nicht an ChatGPT gesendet.</p></div></div>
-        <input ref={imageRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+        {!nativePlatform && <input ref={imageRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />}
         {previewUrl && <div className="import-image-preview"><img src={previewUrl} alt="Vorschau des Originalbons" /><span>{file?.name ?? "Originalbon ausgewählt"}</span></div>}
-        <button className="button ghost" disabled={selectingImage} onClick={() => imageRef.current?.click()}><ImageIcon /> {selectingImage ? "Bonbild wird übernommen …" : file ? "Anderes Bild wählen" : "Bonbild auswählen"}</button>
+        <button className="button ghost" disabled={selectingImage} onClick={() => nativePlatform ? onPickNative("gallery") : imageRef.current?.click()}><ImageIcon /> {selectingImage ? "Bonbild wird übernommen …" : file ? "Anderes Bild wählen" : "Bonbild auswählen"}</button>
         {imageError && <div className="import-error" role="alert"><AlertIcon /><span>{imageError} Du kannst das JSON auch ohne Bild importieren.</span></div>}
       </section>
 
