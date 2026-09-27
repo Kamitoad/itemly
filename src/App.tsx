@@ -291,7 +291,7 @@ function CaptureScreen({
       {previewUrl ? (
         <div className="capture-preview">
           <img src={previewUrl} alt="Vorschau des ausgewählten Kassenbons" />
-          <div className="preview-meta"><CheckIcon /><span><strong>{file?.name}</strong><small>Bereit zur Analyse</small></span></div>
+          <div className="preview-meta"><CheckIcon /><span><strong>{file?.name}</strong><small>{config?.extractionMode === "manual" ? "Bereit zur Erfassung" : "Bereit zur Analyse"}</small></span></div>
         </div>
       ) : (
         <div className="scan-illustration" aria-hidden="true">
@@ -307,8 +307,8 @@ function CaptureScreen({
       {previewUrl && (
         <div className="consent-card">
           <div><ShieldIcon /></div>
-          <p><strong>Vor dem Analysieren</strong><span>{config?.disclosure ?? "Konfiguration wird geladen …"}</span></p>
-          <button className="button primary" onClick={onAnalyze}>Bon jetzt analysieren <ArrowIcon /></button>
+          <p><strong>{config?.extractionMode === "manual" ? "Vor dem Erfassen" : "Vor dem Analysieren"}</strong><span>{config?.disclosure ?? "Konfiguration wird geladen …"}</span></p>
+          <button className="button primary" onClick={onAnalyze}>{config?.extractionMode === "manual" ? "Bild übernehmen" : "Bon jetzt analysieren"} <ArrowIcon /></button>
         </div>
       )}
 

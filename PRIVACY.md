@@ -12,7 +12,9 @@ Itemly may store:
 - Payment method, card brand, and at most the visible last four card digits
 - Review status, uncertainties, technical source details, and personal notes
 
-By default, this data is stored in the local `./data` directory. Structured data is stored in SQLite; images are stored in `receipts/`. The browser stores only the chosen appearance and the installable PWA shell.
+In the web runtime, this data is stored in the local `./data` directory. Structured data is stored in SQLite; images are stored in `receipts/`. The browser stores only the chosen appearance and the installable PWA shell.
+
+The experimental Android runtime instead stores receipts and original images in app-private storage on the phone. It does not call the PC API for core operations, and Android system cloud backup is disabled. Device-to-device transfer behavior can vary by Android manufacturer; explicit exclusion rules are also configured. Existing web-server data is not automatically migrated to Android. Uninstalling the app deletes its private data; Android export and restore are not yet available.
 
 ## AI processing
 
@@ -32,7 +34,7 @@ Itemly contains no ads, telemetry, or built-in analytics. Without a configured A
 
 ## Backups and deletion
 
-Backups contain the complete SQLite database and available receipt images. Treat them as confidential as the local data directory. The operator is responsible for deleting or moving local data and backups. Version 0.1.0 does not yet offer deletion in the UI.
+Web-server backups contain the complete SQLite database and available receipt images. Treat them as confidential as the local data directory. The operator is responsible for deleting or moving local data and backups. Version 0.1.0 does not yet offer deletion in the UI. The Android prototype currently has no backup/restore feature and should not be used as the only copy of important data.
 
 ## Network use
 

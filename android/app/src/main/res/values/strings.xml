@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Itemly</string>
+    <string name="title_activity_main">Itemly</string>
+    <string name="package_name">com.kamitoad.itemly</string>
+    <string name="custom_url_scheme">com.kamitoad.itemly</string>
+</resources>
