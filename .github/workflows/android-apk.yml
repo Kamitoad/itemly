@@ -46,10 +46,18 @@ jobs:
         env:
           ORG_GRADLE_PROJECT_itemlyPreview: 'true'
         run: bash ./gradlew --no-daemon :app:assembleDebug
+      - name: Name preview APK
+        id: preview
+        shell: bash
+        run: |
+          name="itemly-android-$(date -u +'%Y-%m-%d-%H%M%S')-preview-pr-${{ github.event.pull_request.number }}"
+          mkdir -p preview-apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk "preview-apk/${name}.apk"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
       - name: Upload test APK
         uses: actions/upload-artifact@v7
         with:
-          name: itemly-android-preview-pr-${{ github.event.pull_request.number }}
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: ${{ steps.preview.outputs.name }}
+          path: preview-apk/${{ steps.preview.outputs.name }}.apk
           if-no-files-found: error
           retention-days: 7
