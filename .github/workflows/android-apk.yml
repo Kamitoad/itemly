@@ -1,0 +1,53 @@
+name: Android debug APK
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/android-apk.yml
+      - android/**
+      - capacitor.config.ts
+      - index.html
+      - package.json
+      - pnpm-lock.yaml
+      - public/**
+      - shared/**
+      - src/**
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and sync Android assets
+        run: pnpm android:sync
+      - name: Build signed debug APK
+        working-directory: android
+        run: bash ./gradlew --no-daemon :app:assembleDebug
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: itemly-android-debug-pr-${{ github.event.pull_request.number }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

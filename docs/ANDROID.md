@@ -4,12 +4,18 @@ This is a development build, not a published app or a verified backup-safe relea
 
 ## Build and install
 
-Requirements: Node.js 24+, pnpm 11.24+, Android Studio with Android SDK and its bundled JDK, and an Android phone with USB debugging enabled. This repository does not bundle the Android toolchain or an APK.
+For a local build, requirements are Node.js 24+, pnpm 11.24+, and Android Studio with Android SDK and its bundled JDK. A USB connection is not required. This repository does not bundle the Android toolchain or an APK.
 
 1. Run `pnpm install`.
 2. Run `pnpm android:sync` to check, build, and copy the web assets into `android/`.
 3. Run `pnpm android:open` and let Android Studio finish its first Gradle/SDK synchronization.
-4. Connect the phone by USB, accept its debugging authorization, select it in Android Studio, and run the `app` debug configuration.
+4. On Android 11 or later, pair the phone with Android Studio using **Wireless debugging** in Developer options, with both devices on the same Wi-Fi network. Select it in Android Studio and run the `app` debug configuration. See the [official wireless debugging guide](https://developer.android.com/studio/run/device).
+
+## Test without Android Studio or USB
+
+The `Android debug APK` GitHub Actions workflow builds a signed **test APK** for pull requests that change the app. Open the successful workflow run in the repository's Actions tab on the phone, download the `itemly-android-debug-pr-*` artifact, extract the ZIP, and tap `app-debug.apk`. Android will ask for permission to install unknown apps from the app used to open the APK. Only install artifacts from a workflow run you trust.
+
+Each CI run creates a temporary debug signing key. A later APK may not install as an update over a previous one; uninstalling first deletes all app-private receipts and images. Use **test receipts only** until backup/restore and durable signing are in place. The artifact expires after seven days and is not a production release.
 
 The generated Android project uses the application ID `com.kamitoad.itemly`. No Google account, home server, or AI API key is needed to enter and save receipts. The normal ChatGPT copy-and-paste workflow still requires the user to access ChatGPT separately; Itemly itself does not upload the photo to ChatGPT.
 
