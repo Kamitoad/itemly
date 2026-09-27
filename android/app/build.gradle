@@ -9,6 +9,7 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        manifestPlaceholders = [itemlyLabel: 'Itemly']
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -17,6 +18,17 @@ android {
         }
     }
     buildTypes {
+        debug {
+            // Opt-in local live-reload build. A separate app ID keeps an
+            // existing CI APK and its phone-local data untouched.
+            if (project.findProperty('itemlyLive') == 'true') {
+                applicationIdSuffix '.live'
+                manifestPlaceholders['itemlyLabel'] = 'Itemly Live'
+            } else if (project.findProperty('itemlyPreview') == 'true') {
+                applicationIdSuffix '.preview'
+                manifestPlaceholders['itemlyLabel'] = 'Itemly Preview'
+            }
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'

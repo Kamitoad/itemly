@@ -18,6 +18,7 @@ import {
   loadConfig,
   loadHistory,
   loadReceipt,
+  prepareReceiptImage,
   saveReceipt,
   type AppConfig,
   type HistoryEntry,
@@ -33,6 +34,9 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>("history");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [selectingImage, setSelectingImage] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const fileSelectionId = useRef(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [draft, setDraft] = useState<ReceiptDraft>(() => createEmptyDraft());
   const [attachment, setAttachment] = useState<AttachmentToken | null>(null);
@@ -63,8 +67,11 @@ export default function App() {
   }
 
   function resetCapture() {
+    fileSelectionId.current += 1;
     if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
     setFile(null);
+    setSelectingImage(false);
+    setImageError(null);
     setPreviewUrl(null);
     setDraft(createEmptyDraft());
     setAttachment(null);
@@ -74,16 +81,33 @@ export default function App() {
     navigate("capture");
   }
 
-  function chooseFile(selected: File | null) {
+  async function chooseFile(selected: File | null) {
     if (!selected) return;
     if (!selected.type.startsWith("image/")) {
-      setNotice({ tone: "error", message: "Bitte wähle eine Bilddatei aus." });
+      setImageError("Bitte wähle eine Bilddatei aus.");
       return;
     }
-    if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
-    setFile(selected);
-    setPreviewUrl(URL.createObjectURL(selected));
-    setNotice(null);
+    const selectionId = ++fileSelectionId.current;
+    setSelectingImage(true);
+    setImageError(null);
+    try {
+      const prepared = await prepareReceiptImage(selected);
+      const nextPreview = prepared?.imageUrl ?? URL.createObjectURL(selected);
+      if (selectionId !== fileSelectionId.current) {
+        URL.revokeObjectURL(nextPreview);
+        return;
+      }
+      setFile(selected);
+      setPreviewUrl(nextPreview);
+      setNotice(null);
+    } catch (error) {
+      if (selectionId !== fileSelectionId.current) return;
+      setFile(null);
+      setPreviewUrl(null);
+      setImageError(error instanceof Error ? error.message : "Das Bonbild konnte nicht gelesen werden. Der JSON-Import ist ohne Bild möglich.");
+    } finally {
+      if (selectionId === fileSelectionId.current) setSelectingImage(false);
+    }
   }
 
   async function analyze() {
@@ -192,6 +216,8 @@ export default function App() {
           <CaptureScreen
             file={file}
             previewUrl={previewUrl}
+            selectingImage={selectingImage}
+            imageError={imageError}
             config={config}
             onChoose={chooseFile}
             onAnalyze={analyze}
@@ -203,6 +229,8 @@ export default function App() {
           <JsonImportScreen
             file={file}
             previewUrl={previewUrl}
+            selectingImage={selectingImage}
+            imageError={imageError}
             onChoose={chooseFile}
             onBack={() => navigate("capture")}
             onImport={importFromChatGpt}
@@ -263,6 +291,8 @@ function NoticeBanner({ notice, onClose }: { notice: Exclude<Notice, null>; onCl
 function CaptureScreen({
   file,
   previewUrl,
+  selectingImage,
+  imageError,
   config,
   onChoose,
   onAnalyze,
@@ -271,6 +301,8 @@ function CaptureScreen({
 }: {
   file: File | null;
   previewUrl: string | null;
+  selectingImage: boolean;
+  imageError: string | null;
   config: AppConfig | null;
   onChoose: (file: File | null) => void;
   onAnalyze: () => void;
@@ -300,28 +332,32 @@ function CaptureScreen({
       )}
 
       <div className="capture-actions">
-        <button className="button primary large" onClick={() => cameraRef.current?.click()}><CameraIcon /> Foto aufnehmen</button>
-        <button className="button secondary large" onClick={() => galleryRef.current?.click()}><ImageIcon /> Bild aus Galerie wählen</button>
+        <button className="button primary large" disabled={selectingImage} onClick={() => cameraRef.current?.click()}><CameraIcon /> Foto aufnehmen</button>
+        <button className="button secondary large" disabled={selectingImage} onClick={() => galleryRef.current?.click()}><ImageIcon /> Bild aus Galerie wählen</button>
       </div>
+      {selectingImage && <p role="status">Bonbild wird lokal übernommen …</p>}
+      {imageError && <div className="import-error" role="alert"><AlertIcon /><span>{imageError}</span></div>}
 
       {previewUrl && (
         <div className="consent-card">
           <div><ShieldIcon /></div>
           <p><strong>{config?.extractionMode === "manual" ? "Vor dem Erfassen" : "Vor dem Analysieren"}</strong><span>{config?.disclosure ?? "Konfiguration wird geladen …"}</span></p>
-          <button className="button primary" onClick={onAnalyze}>{config?.extractionMode === "manual" ? "Bild übernehmen" : "Bon jetzt analysieren"} <ArrowIcon /></button>
+          <button className="button primary" disabled={selectingImage} onClick={onAnalyze}>{config?.extractionMode === "manual" ? "Bild übernehmen" : "Bon jetzt analysieren"} <ArrowIcon /></button>
         </div>
       )}
 
-      <button className="button chatgpt-import-button" onClick={onJsonImport}><CodeIcon /> ChatGPT-JSON importieren</button>
+      <button className="button chatgpt-import-button" disabled={selectingImage} onClick={onJsonImport}><CodeIcon /> ChatGPT-JSON importieren</button>
       <button className="text-button" onClick={onManual}>Ohne Bild manuell erfassen</button>
       <p className="privacy-note"><LockIcon /> Erst nach „Bon jetzt analysieren“ wird ein Bild verarbeitet.</p>
     </section>
   );
 }
 
-function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
+function JsonImportScreen({ file, previewUrl, selectingImage, imageError, onChoose, onBack, onImport }: {
   file: File | null;
   previewUrl: string | null;
+  selectingImage: boolean;
+  imageError: string | null;
   onChoose: (file: File | null) => void;
   onBack: () => void;
   onImport: (content: string) => Promise<void>;
@@ -362,7 +398,7 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
 
   return (
     <section className="page narrow json-import-page">
-      <button className="text-button back" onClick={onBack}>← Zurück</button>
+      <button className="text-button back" disabled={selectingImage} onClick={onBack}>← Zurück</button>
       <div className="eyebrow">Ohne API-Schlüssel</div>
       <h1>ChatGPT-JSON importieren</h1>
       <p className="lead">Lass deinen Bon in einem normalen ChatGPT-Chat auslesen und füge das Ergebnis hier ein. Itemly prüft die Struktur, bevor du jeden Wert kontrollierst.</p>
@@ -387,7 +423,8 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
         <div className="import-step-heading"><span>2</span><div><h2>Originalbon lokal ablegen</h2><p>Optional, aber empfohlen. Das Bild wird von Itemly nicht an ChatGPT gesendet.</p></div></div>
         <input ref={imageRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
         {previewUrl && <div className="import-image-preview"><img src={previewUrl} alt="Vorschau des Originalbons" /><span>{file?.name ?? "Originalbon ausgewählt"}</span></div>}
-        <button className="button ghost" onClick={() => imageRef.current?.click()}><ImageIcon /> {file ? "Anderes Bild wählen" : "Bonbild auswählen"}</button>
+        <button className="button ghost" disabled={selectingImage} onClick={() => imageRef.current?.click()}><ImageIcon /> {selectingImage ? "Bonbild wird übernommen …" : file ? "Anderes Bild wählen" : "Bonbild auswählen"}</button>
+        {imageError && <div className="import-error" role="alert"><AlertIcon /><span>{imageError} Du kannst das JSON auch ohne Bild importieren.</span></div>}
       </section>
 
       <section className="import-step-card">
@@ -403,7 +440,7 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
           />
         </label>
         {error && <div className="import-error" role="alert"><AlertIcon /><span>{error}</span></div>}
-        <button className="button primary large" disabled={submitting || content.trim().length === 0} onClick={submit}>
+        <button className="button primary large" disabled={submitting || selectingImage || content.trim().length === 0} onClick={submit}>
           {submitting ? "JSON wird geprüft …" : "JSON prüfen und übernehmen"} {!submitting && <ArrowIcon />}
         </button>
       </section>

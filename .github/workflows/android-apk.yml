@@ -43,11 +43,13 @@ jobs:
         run: pnpm android:sync
       - name: Build signed debug APK
         working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_itemlyPreview: 'true'
         run: bash ./gradlew --no-daemon :app:assembleDebug
       - name: Upload test APK
         uses: actions/upload-artifact@v7
         with:
-          name: itemly-android-debug-pr-${{ github.event.pull_request.number }}
+          name: itemly-android-preview-pr-${{ github.event.pull_request.number }}
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 7

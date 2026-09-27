@@ -54,6 +54,11 @@ export function loadConfig(): Promise<AppConfig> {
   return json<AppConfig>("/api/config");
 }
 
+export function prepareReceiptImage(file: File): Promise<AttachmentToken | null> {
+  if (Capacitor.isNativePlatform()) return nativeApi.prepareReceiptImage(file);
+  return Promise.resolve(null);
+}
+
 export async function extractReceipt(file: File): Promise<ExtractionResponse & { extractionError?: string }> {
   if (Capacitor.isNativePlatform()) return nativeApi.extractReceipt(file);
   const data = new FormData();

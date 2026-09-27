@@ -13,7 +13,12 @@ type TestRow = {
   extraction_json: string | null;
 };
 
-const state = vi.hoisted(() => ({ version: 0, records: [] as TestRow[] }));
+const state = vi.hoisted(() => ({
+  version: 0,
+  records: [] as TestRow[],
+  images: new Map<string, string>(),
+  failImageWrite: false
+}));
 
 vi.mock("@capacitor-community/sqlite", () => ({
   CapacitorSQLite: {},
@@ -24,6 +29,7 @@ vi.mock("@capacitor-community/sqlite", () => ({
         execute: async () => { state.version = 1; },
         query: async (sql: string, values: string[] = []) => {
           if (sql.startsWith("PRAGMA")) return { values: [{ user_version: state.version }] };
+          if (sql.includes("SELECT image_sha256")) return { values: state.records.map((row) => ({ image_sha256: row.image_sha256 })).filter((row) => row.image_sha256) };
           if (sql.includes("WHERE client_mutation_id")) return { values: state.records.filter((row) => row.client_mutation_id === values[0]) };
           if (sql.includes("WHERE image_sha256")) return { values: state.records.filter((row) => row.image_sha256 === values[0]) };
           if (sql.includes("WHERE id")) return { values: state.records.filter((row) => row.id === values[0]) };
@@ -48,7 +54,26 @@ vi.mock("@capacitor-community/sqlite", () => ({
   }
 }));
 
-vi.mock("@capacitor/filesystem", () => ({ Directory: { Data: "DATA" }, Filesystem: {} }));
+vi.mock("@capacitor/filesystem", () => ({
+  Directory: { Data: "DATA" },
+  Filesystem: {
+    readdir: async () => ({ files: [...state.images.keys()].map((path) => ({ name: path.split("/").at(-1) })) }),
+    deleteFile: async ({ path }: { path: string }) => { state.images.delete(path); },
+    stat: async ({ path }: { path: string }) => {
+      if (!state.images.has(path)) throw new Error("File not found");
+      return { size: state.images.get(path)!.length };
+    },
+    readFile: async ({ path }: { path: string }) => {
+      const data = state.images.get(path);
+      if (!data) throw new Error("File not found");
+      return { data };
+    },
+    writeFile: async ({ path, data }: { path: string; data: string }) => {
+      if (state.failImageWrite) throw new Error("Disk full");
+      state.images.set(path, data);
+    }
+  }
+}));
 
 import * as nativeApi from "../src/native/api.js";
 
@@ -75,5 +100,67 @@ describe("phone-local receipt adapter", () => {
     const unbalanced = { ...input, clientMutationId: createUuid(), draft: { ...draft, totalMinor: 300 } };
     await expect(nativeApi.saveReceipt(unbalanced)).rejects.toThrow("nicht ausgeglichener Bon");
     expect(state.records).toHaveLength(1);
+  });
+
+  it("copies a picked image before import and never reads the picker file again", async () => {
+    state.records.length = 0;
+    state.images.clear();
+    const bytes = new TextEncoder().encode("receipt-photo");
+    let reads = 0;
+    const file = {
+      name: "receipt.jpg",
+      type: "image/jpeg",
+      size: bytes.byteLength,
+      arrayBuffer: async () => {
+        reads += 1;
+        if (reads > 1) throw new Error("Picker access expired");
+        return bytes.buffer;
+      }
+    } as unknown as File;
+    const prepared = await nativeApi.prepareReceiptImage(file);
+    expect(reads).toBe(1);
+    expect(state.images.has(`receipts/${prepared.token}`)).toBe(true);
+
+    const imported = await nativeApi.importChatGptReceipt('{"merchantName":"Shop","currency":"CAD"}', file);
+    expect(imported.attachment?.token).toBe(prepared.token);
+    const draft = imported.draft;
+    const item = createEmptyItem(1);
+    item.lineTotalMinor = 250;
+    draft.items = [item];
+    draft.totalMinor = 250;
+    const saved = await nativeApi.saveReceipt({
+      clientMutationId: createUuid(), status: "confirmed", draft,
+      attachment: imported.attachment, extractionId: imported.extraction.id
+    });
+    expect(reads).toBe(1);
+    expect(saved.receipt.attachment?.sha256).toBe(prepared.sha256);
+    expect(state.records).toHaveLength(1);
+  });
+
+  it("keeps JSON-only import available when the image picker cannot be read", async () => {
+    const unreadable = {
+      name: "receipt.jpg", type: "image/jpeg", size: 100,
+      arrayBuffer: async () => { throw new Error("Picker access expired"); }
+    } as unknown as File;
+    await expect(nativeApi.prepareReceiptImage(unreadable)).rejects.toThrow("Bonbild ist nicht lesbar");
+    const result = await nativeApi.importChatGptReceipt('{"merchantName":"Shop","currency":"CAD"}', null);
+    expect(result.draft.merchantName).toBe("Shop");
+    expect(result.attachment).toBeNull();
+  });
+
+  it("does not accept an image that could not be copied into private storage", async () => {
+    state.records.length = 0;
+    state.failImageWrite = true;
+    const bytes = new TextEncoder().encode("another-receipt-photo");
+    const file = {
+      name: "receipt.jpg", type: "image/jpeg", size: bytes.byteLength,
+      arrayBuffer: async () => bytes.buffer
+    } as unknown as File;
+    try {
+      await expect(nativeApi.prepareReceiptImage(file)).rejects.toThrow("Disk full");
+      expect(state.records).toHaveLength(0);
+    } finally {
+      state.failImageWrite = false;
+    }
   });
 });

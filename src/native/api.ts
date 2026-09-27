@@ -38,7 +38,7 @@ const mimeExtensions: Record<string, string> = {
   "image/heic": "heic",
   "image/heif": "heif"
 };
-const pendingImages = new Map<string, File>();
+const preparedImages = new WeakMap<File, AttachmentToken>();
 const pendingExtractions = new Map<string, unknown>();
 let connectionPromise: Promise<SQLiteDBConnection> | null = null;
 
@@ -58,7 +58,30 @@ async function openDatabase(): Promise<SQLiteDBConnection> {
   const version = Number((versionRows.values?.[0] as { user_version?: number } | undefined)?.user_version ?? 0);
   if (version > 1) throw new Error("Diese Itemly-Datenbank wurde mit einer neueren App-Version erstellt.");
   if (version < 1) await db.execute(initialMigration);
+  // Only remove content-addressed files with no committed receipt reference.
+  // This reclaims images selected before an abandoned or interrupted import.
+  await pruneUnreferencedImages(db).catch(() => undefined);
   return db;
+}
+
+async function pruneUnreferencedImages(db: SQLiteDBConnection): Promise<void> {
+  const result = await db.query("SELECT image_sha256 FROM receipts WHERE image_sha256 IS NOT NULL;");
+  const referenced = new Set((result.values ?? []).map((row) => (row as { image_sha256: string }).image_sha256));
+  const staleBefore = Date.now() - 24 * 60 * 60 * 1000;
+  let files;
+  try {
+    files = (await Filesystem.readdir({ path: imageFolder, directory: Directory.Data })).files;
+  } catch {
+    return;
+  }
+  for (const file of files) {
+    // Keep recently selected images across a WebView/HMR restart so an
+    // in-progress import cannot lose its private copy.
+    if (file.type !== "file" || !Number.isFinite(file.mtime) || file.mtime > staleBefore) continue;
+    if (!/^[a-f0-9]{64}\.(?:jpg|png|webp|heic|heif)$/.test(file.name)) continue;
+    if (referenced.has(file.name.slice(0, 64))) continue;
+    await Filesystem.deleteFile({ path: `${imageFolder}/${file.name}`, directory: Directory.Data }).catch(() => undefined);
+  }
 }
 
 async function rows<T>(sql: string, values: (string | number | null)[] = []): Promise<T[]> {
@@ -71,26 +94,77 @@ function imagePath(token: string): string {
   return `${imageFolder}/${attachmentTokenSchema.shape.token.parse(token)}`;
 }
 
-async function hashFile(file: File): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+async function hashBytes(bytes: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-async function imageFromFile(file: File): Promise<AttachmentToken> {
+function toBase64(bytes: ArrayBuffer): string {
+  const view = new Uint8Array(bytes);
+  const chunks: string[] = [];
+  for (let index = 0; index < view.length; index += 32_768) {
+    chunks.push(String.fromCharCode(...view.subarray(index, index + 32_768)));
+  }
+  return btoa(chunks.join(""));
+}
+
+async function verifyStoredImage(path: string, expectedSha256: string): Promise<void> {
+  let data;
+  try {
+    ({ data } = await Filesystem.readFile({ path, directory: Directory.Data }));
+  } catch {
+    throw new Error("Das lokal gespeicherte Bonbild ist nicht verfügbar. Bitte wähle es erneut aus.");
+  }
+  if (typeof data !== "string") throw new Error("Das gespeicherte Bonbild konnte nicht gelesen werden.");
+  const binary = atob(data);
+  const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  if (await hashBytes(bytes.buffer) !== expectedSha256) {
+    throw new Error("Das gespeicherte Bonbild ist beschädigt. Bitte wähle es erneut aus.");
+  }
+}
+
+export async function prepareReceiptImage(file: File): Promise<AttachmentToken> {
   const mimeType = file.type === "image/jpg" ? "image/jpeg" : file.type.toLowerCase();
   const extension = mimeExtensions[mimeType];
   if (!extension) throw new Error("Unterstützt werden JPEG, PNG, WebP, HEIC und HEIF.");
   if (file.size < 1 || file.size > maximumImageBytes) throw new Error("Das Bonbild muss zwischen 1 Byte und 15 MB groß sein.");
-  const sha256 = await hashFile(file);
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await file.arrayBuffer();
+  } catch {
+    throw new Error("Das gewählte Bonbild ist nicht lesbar. Wähle es erneut oder importiere das JSON ohne Bild.");
+  }
+  if (bytes.byteLength !== file.size) throw new Error("Das Bonbild wurde nicht vollständig gelesen. Wähle es erneut aus.");
+  await database();
+  const sha256 = await hashBytes(bytes);
   const token = `${sha256}.${extension}`;
-  pendingImages.set(token, file);
-  return attachmentTokenSchema.parse({
+  const path = imagePath(token);
+  let alreadyStored = false;
+  try {
+    await Filesystem.stat({ path, directory: Directory.Data });
+    alreadyStored = true;
+  } catch {
+    // The content-addressed image has not been copied into private storage.
+  }
+  if (alreadyStored) {
+    await verifyStoredImage(path, sha256);
+  } else {
+    await Filesystem.writeFile({ path, directory: Directory.Data, data: toBase64(bytes), recursive: true });
+    await verifyStoredImage(path, sha256);
+  }
+  const attachment = attachmentTokenSchema.parse({
     token,
     sha256,
     mimeType,
     originalName: file.name.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 180) || "receipt-image",
-    imageUrl: URL.createObjectURL(file)
+    imageUrl: URL.createObjectURL(new Blob([bytes], { type: mimeType }))
   });
+  preparedImages.set(file, attachment);
+  return attachment;
+}
+
+async function imageFromFile(file: File): Promise<AttachmentToken> {
+  return preparedImages.get(file) ?? prepareReceiptImage(file);
 }
 
 async function existingDuplicate(sha256: string | undefined): Promise<string | null> {
@@ -149,30 +223,11 @@ export async function importChatGptReceipt(content: string, file: File | null): 
   };
 }
 
-function fileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error ?? new Error("Das Bild konnte nicht gelesen werden."));
-    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
-    reader.readAsDataURL(file);
-  });
-}
-
 async function ensureImageSaved(attachment: AttachmentToken): Promise<void> {
-  const path = imagePath(attachment.token);
-  const file = pendingImages.get(attachment.token);
-  if (!file || await hashFile(file) !== attachment.sha256 || attachment.token !== `${attachment.sha256}.${mimeExtensions[attachment.mimeType]}`) {
-    throw new Error("Das Originalbild ist nicht mehr verfügbar. Wähle es erneut aus.");
+  if (attachment.token !== `${attachment.sha256}.${mimeExtensions[attachment.mimeType]}`) {
+    throw new Error("Das Bonbild ist ungültig. Wähle es erneut aus.");
   }
-  try {
-    const existing = await Filesystem.stat({ path, directory: Directory.Data });
-    if (existing.size === file.size) return;
-  } catch {
-    // No durable copy exists yet; write the selected image before the DB reference.
-  }
-  await Filesystem.writeFile({ path, directory: Directory.Data, data: await fileAsBase64(file), recursive: true });
-  const written = await Filesystem.stat({ path, directory: Directory.Data });
-  if (written.size !== file.size) throw new Error("Das Bonbild wurde nicht vollständig gespeichert.");
+  await verifyStoredImage(imagePath(attachment.token), attachment.sha256);
 }
 
 async function storedAttachment(value: string | null): Promise<AttachmentToken | null> {
@@ -234,7 +289,6 @@ export async function saveReceipt(input: SaveReceiptRequest): Promise<{ id: stri
   ]);
   const saved = await rows<ReceiptRow>("SELECT * FROM receipts WHERE client_mutation_id = ? LIMIT 1;", [request.clientMutationId]);
   if (!saved[0]) throw new Error("Der Bon konnte nicht gespeichert werden.");
-  if (attachment) pendingImages.delete(attachment.token);
   if (request.extractionId) pendingExtractions.delete(request.extractionId);
   return { id: saved[0].id, receipt: await mapReceipt(saved[0]) };
 }
