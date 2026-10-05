@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UNKNOWN_CURRENCY } from "./currency.js";
 
 export const provenanceSchema = z.enum([
   "extracted",
@@ -100,12 +101,24 @@ export const saveReceiptSchema = z.object({
   extractionId: z.string().uuid().nullable()
 });
 
+export const receiptMutationSchema = z.object({
+  clientMutationId: z.string().uuid(),
+  expectedRevision: z.number().int().positive().safe()
+});
+
+export const updateReceiptSchema = receiptMutationSchema.extend({
+  status: z.enum(["draft", "confirmed"]),
+  draft: receiptDraftSchema
+});
+
 export type Provenance = z.infer<typeof provenanceSchema>;
 export type ReceiptItem = z.infer<typeof receiptItemSchema>;
 export type ReceiptDraft = z.infer<typeof receiptDraftSchema>;
 export type AttachmentToken = z.infer<typeof attachmentTokenSchema>;
 export type ExtractionResponse = z.infer<typeof extractionResponseSchema>;
 export type SaveReceiptRequest = z.infer<typeof saveReceiptSchema>;
+export type ReceiptMutationRequest = z.infer<typeof receiptMutationSchema>;
+export type UpdateReceiptRequest = z.infer<typeof updateReceiptSchema>;
 
 export interface ReceiptCalculations {
   positionCount: number;
@@ -166,7 +179,7 @@ export function calculateReceipt(draft: ReceiptDraft): ReceiptCalculations {
   };
 }
 
-export function createEmptyDraft(currency = "CAD"): ReceiptDraft {
+export function createEmptyDraft(currency = UNKNOWN_CURRENCY): ReceiptDraft {
   return {
     schemaVersion: "1.0",
     merchantName: null,
@@ -223,6 +236,7 @@ export function createEmptyItem(lineNumber: number): ReceiptItem {
 
 export function formatMoney(minor: number | null, currency: string, locale = "de-DE"): string {
   if (minor === null) return "Unbekannt";
+  if (currency === UNKNOWN_CURRENCY) return new Intl.NumberFormat(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(minor / 100);
   return new Intl.NumberFormat(locale, { style: "currency", currency }).format(minor / 100);
 }
 

@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { DatabaseSync } from "node:sqlite";
 import { createEmptyDraft, createEmptyItem, createUuid } from "../shared/receipt.js";
+import { applyCurrencyPreference, confirmCurrency } from "../shared/currency.js";
 
 type TestRow = {
   id: string;
@@ -14,41 +16,35 @@ type TestRow = {
 };
 
 const state = vi.hoisted(() => ({
-  version: 0,
+  db: null as DatabaseSync | null,
   records: [] as TestRow[],
   images: new Map<string, string>(),
   failImageWrite: false
 }));
 
-vi.mock("@capacitor-community/sqlite", () => ({
+vi.mock("@capacitor-community/sqlite", async () => ({
   CapacitorSQLite: {},
   SQLiteConnection: class {
     async createConnection() {
+      const { DatabaseSync } = await import("node:sqlite");
+      const db = new DatabaseSync(":memory:");
+      db.exec("PRAGMA foreign_keys = ON;");
+      state.db = db;
+      function refresh() { state.records = db.prepare("SELECT * FROM receipts").all() as TestRow[]; }
       return {
         open: async () => undefined,
-        execute: async () => { state.version = 1; },
+        execute: async (sql: string) => { db.exec(sql); },
         query: async (sql: string, values: string[] = []) => {
-          if (sql.startsWith("PRAGMA")) return { values: [{ user_version: state.version }] };
-          if (sql.includes("SELECT image_sha256")) return { values: state.records.map((row) => ({ image_sha256: row.image_sha256 })).filter((row) => row.image_sha256) };
-          if (sql.includes("WHERE client_mutation_id")) return { values: state.records.filter((row) => row.client_mutation_id === values[0]) };
-          if (sql.includes("WHERE image_sha256")) return { values: state.records.filter((row) => row.image_sha256 === values[0]) };
-          if (sql.includes("WHERE id")) return { values: state.records.filter((row) => row.id === values[0]) };
-          return { values: [...state.records] };
+          return { values: db.prepare(sql).all(...values) };
         },
-        run: async (_sql: string, values: unknown[]) => {
-          if (state.records.some((row) => row.client_mutation_id === values[1])) return;
-          state.records.push({
-            id: values[0] as string,
-            client_mutation_id: values[1] as string,
-            status: values[2] as string,
-            scanned_at: values[3] as string,
-            confirmed_at: values[4] as string | null,
-            draft_json: values[5] as string,
-            attachment_json: values[6] as string | null,
-            image_sha256: values[7] as string | null,
-            extraction_json: values[8] as string | null
-          });
-        }
+        run: async (sql: string, values: (string | number | null)[]) => {
+          const result = db.prepare(sql).run(...values);
+          refresh();
+          return { changes: { changes: Number(result.changes) } };
+        },
+        beginTransaction: async () => { db.exec("BEGIN IMMEDIATE"); },
+        commitTransaction: async () => { db.exec("COMMIT"); refresh(); },
+        rollbackTransaction: async () => { db.exec("ROLLBACK"); refresh(); }
       };
     }
   }
@@ -77,11 +73,103 @@ vi.mock("@capacitor/filesystem", () => ({
 
 import * as nativeApi from "../src/native/api.js";
 
+beforeEach(() => {
+  state.db?.exec("DELETE FROM receipt_audit_events; DELETE FROM receipt_mutations; DELETE FROM receipts;");
+  state.records.length = 0;
+  state.images.clear();
+});
+
 describe("phone-local receipt adapter", () => {
+  it("serializes concurrent updates and accepts only one edit of a revision", async () => {
+    const draft = createEmptyDraft("CAD");
+    const saved = await nativeApi.saveReceipt({ clientMutationId: createUuid(), status: "draft", draft, attachment: null, extractionId: null });
+    const edits = ["first", "second"].map((notes) => nativeApi.updateReceipt(saved.id, {
+      clientMutationId: createUuid(), expectedRevision: 1, status: "draft", draft: { ...draft, notes }
+    }));
+    const results = await Promise.allSettled(edits);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect((await nativeApi.loadReceipt(saved.id)).receipt).toMatchObject({ revision: 2, draft: { notes: "first" } });
+  });
+  it("updates item CRUD without duplicating the receipt and rejects stale edits", async () => {
+    const imported = await nativeApi.importChatGptReceipt('{"currency":"CAD","totalMinor":100,"items":[{"rawName":"ORIGINAL","lineTotalMinor":100}]}', null);
+    const saved = await nativeApi.saveReceipt({ clientMutationId: createUuid(), status: "confirmed", draft: imported.draft, attachment: null, extractionId: imported.extraction.id });
+    const originalExtraction = state.records[0].extraction_json;
+    const added = createEmptyItem(2);
+    added.lineTotalMinor = 200;
+    const draft = { ...saved.receipt.draft, merchantName: "Corrected shop", totalMinor: 300, items: [{ ...saved.receipt.draft.items[0], normalizedName: "Updated" }, added] };
+    const input = { clientMutationId: createUuid(), expectedRevision: 1, status: "confirmed" as const, draft };
+    const changed = await nativeApi.updateReceipt(saved.id, input);
+    await nativeApi.updateReceipt(saved.id, input);
+    expect(changed.receipt).toMatchObject({ revision: 2, scannedAt: saved.receipt.scannedAt, confirmedAt: saved.receipt.confirmedAt });
+    expect(changed.receipt.draft.items).toHaveLength(2);
+    expect(state.records).toHaveLength(1);
+    expect(state.records[0].extraction_json).toBe(originalExtraction);
+    await expect(nativeApi.updateReceipt(saved.id, { ...input, clientMutationId: createUuid() })).rejects.toThrow("erneut");
+    await expect(nativeApi.updateReceipt(saved.id, { ...input, clientMutationId: createUuid(), expectedRevision: 2, draft: { ...draft, totalMinor: 400 } })).rejects.toThrow("ausgeglichener");
+    expect((await nativeApi.loadReceipt(saved.id)).receipt.revision).toBe(2);
+    const result = await nativeApi.updateReceipt(saved.id, { ...input, clientMutationId: createUuid(), expectedRevision: 2, draft: { ...draft, items: [added], totalMinor: 200 } });
+    expect(result.receipt.draft.items.map((item) => item.id)).toEqual([added.id]);
+    expect(state.db!.prepare("SELECT COUNT(*) AS count FROM receipt_audit_events").get()).toMatchObject({ count: 2 });
+  });
+
+  it("moves receipts to trash and restores them with their original image", async () => {
+    const bytes = new TextEncoder().encode("crud-test-image");
+    const file = { name: "receipt.jpg", type: "image/jpeg", size: bytes.byteLength, arrayBuffer: async () => bytes.buffer } as unknown as File;
+    const attachment = await nativeApi.prepareReceiptImage(file);
+    const draft = createEmptyDraft("CAD");
+    const item = createEmptyItem(1); item.lineTotalMinor = 100;
+    draft.items = [item]; draft.totalMinor = 100;
+    const saved = await nativeApi.saveReceipt({ clientMutationId: createUuid(), status: "confirmed", draft, attachment, extractionId: null });
+    const mutation = { clientMutationId: createUuid(), expectedRevision: 1 };
+    const deleted = await nativeApi.changeReceiptDeleted(saved.id, mutation, true);
+    await nativeApi.changeReceiptDeleted(saved.id, mutation, true);
+    expect(deleted.receipt.revision).toBe(2);
+    expect((await nativeApi.loadHistory()).receipts).toHaveLength(0);
+    expect((await nativeApi.loadHistory("", true)).receipts).toHaveLength(1);
+    expect(state.images.size).toBe(1);
+    await expect(nativeApi.updateReceipt(saved.id, { clientMutationId: createUuid(), expectedRevision: 2, status: "confirmed", draft })).rejects.toThrow("gelöscht");
+    await expect(nativeApi.changeReceiptDeleted(saved.id, { clientMutationId: createUuid(), expectedRevision: 1 }, false)).rejects.toThrow("erneut");
+    const restore = { clientMutationId: createUuid(), expectedRevision: 2 };
+    const restored = await nativeApi.changeReceiptDeleted(saved.id, restore, false);
+    await nativeApi.changeReceiptDeleted(saved.id, restore, false);
+    expect(restored.receipt).toMatchObject({ revision: 3, deletedAt: null, draft });
+    expect(restored.receipt.attachment?.sha256).toBe(attachment.sha256);
+    expect((await nativeApi.loadHistory()).receipts).toHaveLength(1);
+    expect((await nativeApi.loadHistory("", true)).receipts).toHaveLength(0);
+  });
+
+  it("rolls back an update when its audit record cannot be committed", async () => {
+    const draft = createEmptyDraft("CAD");
+    const saved = await nativeApi.saveReceipt({ clientMutationId: createUuid(), status: "draft", draft, attachment: null, extractionId: null });
+    state.db!.exec("CREATE TEMP TRIGGER fail_audit BEFORE INSERT ON receipt_audit_events BEGIN SELECT RAISE(ABORT, 'Test audit failure'); END;");
+    const input = { clientMutationId: createUuid(), expectedRevision: 1, status: "draft" as const, draft: { ...draft, notes: "Must roll back" } };
+    try {
+      await expect(nativeApi.updateReceipt(saved.id, input)).rejects.toThrow("Test audit failure");
+      expect((await nativeApi.loadReceipt(saved.id)).receipt).toMatchObject({ revision: 1, draft: { notes: "" } });
+      expect(state.db!.prepare("SELECT COUNT(*) AS count FROM receipt_mutations").get()).toMatchObject({ count: 0 });
+    } finally { state.db!.exec("DROP TRIGGER fail_audit;"); }
+    await expect(nativeApi.updateReceipt(saved.id, input)).resolves.toHaveProperty("receipt.revision", 2);
+  });
+  it("preserves unreviewed currency drafts and rejects confirmation until reviewed", async () => {
+    const item = createEmptyItem(1);
+    item.lineTotalMinor = 100;
+    const draft = createEmptyDraft();
+    draft.items = [item];
+    draft.totalMinor = 100;
+    const input = { clientMutationId: createUuid(), status: "confirmed" as const, draft, attachment: null, extractionId: null };
+    await expect(nativeApi.saveReceipt(input)).rejects.toThrow("Währung");
+    const suggestion = applyCurrencyPreference(draft, "EUR");
+    const saved = await nativeApi.saveReceipt({ ...input, status: "draft", draft: suggestion });
+    const loaded = (await nativeApi.loadReceipt(saved.id)).receipt.draft;
+    expect(loaded.fieldSources.currency).toBe("uncertain");
+    await expect(nativeApi.saveReceipt({ ...input, clientMutationId: createUuid(), draft: loaded })).rejects.toThrow("Währung");
+    await expect(nativeApi.saveReceipt({ ...input, clientMutationId: createUuid(), draft: confirmCurrency(loaded, "EUR") })).resolves.toHaveProperty("id");
+  });
   it("saves balanced receipts locally and makes retries idempotent", async () => {
     state.records.length = 0;
     await expect(nativeApi.loadConfig()).resolves.toMatchObject({ extractionMode: "manual" });
-    const draft = createEmptyDraft();
+    const draft = createEmptyDraft("CAD");
     const item = createEmptyItem(1);
     item.normalizedName = "Eggs";
     item.lineTotalMinor = 299;

@@ -1,4 +1,5 @@
 import { Directory, Filesystem } from "@capacitor/filesystem";
+import { needsCurrencyReview } from "../../shared/currency.js";
 import { CapacitorSQLite, SQLiteConnection, type SQLiteDBConnection } from "@capacitor-community/sqlite";
 import {
   attachmentTokenSchema,
@@ -7,17 +8,24 @@ import {
   createUuid,
   receiptDraftSchema,
   saveReceiptSchema,
+  updateReceiptSchema,
+  receiptMutationSchema,
   type AttachmentToken,
   type ExtractionResponse,
-  type SaveReceiptRequest
+  type SaveReceiptRequest,
+  type UpdateReceiptRequest,
+  type ReceiptMutationRequest
 } from "../../shared/receipt.js";
 import { parsePastedReceiptJson } from "../../shared/receipt-import.js";
 import { groupHistoryEntries } from "../history.js";
 import type { AppConfig, HistoryEntry, StoredReceipt } from "../api.js";
 import initialMigration from "./migrations/001_initial.sql?raw";
+import crudMigration from "./migrations/002_receipt_crud.sql?raw";
 
 type ReceiptRow = {
   id: string;
+  revision: number;
+  deleted_at: string | null;
   client_mutation_id: string;
   status: "draft" | "confirmed";
   scanned_at: string;
@@ -52,12 +60,13 @@ async function database(): Promise<SQLiteDBConnection> {
 
 async function openDatabase(): Promise<SQLiteDBConnection> {
   const sqlite = new SQLiteConnection(CapacitorSQLite);
-  const db = await sqlite.createConnection(databaseName, false, "no-encryption", 1, false);
+  const db = await sqlite.createConnection(databaseName, false, "no-encryption", 2, false);
   await db.open();
   const versionRows = await db.query("PRAGMA user_version;");
   const version = Number((versionRows.values?.[0] as { user_version?: number } | undefined)?.user_version ?? 0);
-  if (version > 1) throw new Error("Diese Itemly-Datenbank wurde mit einer neueren App-Version erstellt.");
+  if (version > 2) throw new Error("Diese Itemly-Datenbank wurde mit einer neueren App-Version erstellt.");
   if (version < 1) await db.execute(initialMigration);
+  if (version < 2) await db.execute(crudMigration);
   // Only remove content-addressed files with no committed receipt reference.
   // This reclaims images selected before an abandoned or interrupted import.
   await pruneUnreferencedImages(db).catch(() => undefined);
@@ -169,7 +178,7 @@ async function imageFromFile(file: File): Promise<AttachmentToken> {
 
 async function existingDuplicate(sha256: string | undefined): Promise<string | null> {
   if (!sha256) return null;
-  const match = await rows<{ id: string }>("SELECT id FROM receipts WHERE image_sha256 = ? LIMIT 1;", [sha256]);
+  const match = await rows<{ id: string }>("SELECT id FROM receipts WHERE image_sha256 = ? AND deleted_at IS NULL LIMIT 1;", [sha256]);
   return match[0]?.id ?? null;
 }
 
@@ -242,6 +251,8 @@ async function mapReceipt(row: ReceiptRow): Promise<StoredReceipt> {
   const draft = receiptDraftSchema.parse(JSON.parse(row.draft_json));
   return {
     id: row.id,
+    revision: row.revision,
+    deletedAt: row.deleted_at,
     status: row.status,
     validationState: validationState(draft),
     scannedAt: row.scanned_at,
@@ -254,15 +265,32 @@ async function mapReceipt(row: ReceiptRow): Promise<StoredReceipt> {
 
 function validationState(draft: ReturnType<typeof receiptDraftSchema.parse>): StoredReceipt["validationState"] {
   const calculation = calculateReceipt(draft);
-  if (draft.totalMinor === null || calculation.missingPriceCount > 0) return "incomplete";
+  if (draft.totalMinor === null || calculation.missingPriceCount > 0 || needsCurrencyReview(draft)) return "incomplete";
   return calculation.isBalanced ? "balanced" : "discrepancy";
 }
 
 export async function saveReceipt(input: SaveReceiptRequest): Promise<{ id: string; receipt: StoredReceipt }> {
+  return withWriteLock(() => saveNewReceipt(input));
+}
+
+// A connection cannot host overlapping transactions. Serialize writes without
+// blocking reads, and let SQLite enforce revision checks within each transaction.
+let writeQueue: Promise<unknown> = Promise.resolve();
+function withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+  const result = writeQueue.then(operation);
+  writeQueue = result.catch(() => undefined);
+  return result;
+}
+
+async function saveNewReceipt(input: SaveReceiptRequest): Promise<{ id: string; receipt: StoredReceipt }> {
   const request = saveReceiptSchema.parse(input);
   const db = await database();
   const prior = await rows<ReceiptRow>("SELECT * FROM receipts WHERE client_mutation_id = ? LIMIT 1;", [request.clientMutationId]);
   if (prior[0]) return { id: prior[0].id, receipt: await mapReceipt(prior[0]) };
+
+  if (request.status === "confirmed" && needsCurrencyReview(request.draft)) {
+    throw new Error("Bitte wähle oder bestätige die Währung. Der Bon kann bereits als Entwurf gespeichert werden.");
+  }
 
   const calculations = calculateReceipt(request.draft);
   if (request.status === "confirmed" && !calculations.isBalanced) {
@@ -293,10 +321,11 @@ export async function saveReceipt(input: SaveReceiptRequest): Promise<{ id: stri
   return { id: saved[0].id, receipt: await mapReceipt(saved[0]) };
 }
 
-export async function loadHistory(search = ""): Promise<{ receipts: HistoryEntry[] }> {
+export async function loadHistory(search = "", trash = false): Promise<{ receipts: HistoryEntry[] }> {
   const all = await rows<ReceiptRow>("SELECT * FROM receipts ORDER BY scanned_at DESC;");
   const term = search.trim().toLocaleLowerCase();
   const entries = all.flatMap((row) => {
+    if (Boolean(row.deleted_at) !== trash) return [];
     const draft = receiptDraftSchema.parse(JSON.parse(row.draft_json));
     if (term && ![draft.merchantName, ...draft.items.flatMap((item) => [item.normalizedName, item.category])]
       .some((value) => value?.toLocaleLowerCase().includes(term))) return [];
@@ -320,4 +349,54 @@ export async function loadReceipt(id: string): Promise<{ receipt: StoredReceipt 
   const match = await rows<ReceiptRow>("SELECT * FROM receipts WHERE id = ? LIMIT 1;", [id]);
   if (!match[0]) throw new Error("Einkauf nicht gefunden.");
   return { receipt: await mapReceipt(match[0]) };
+}
+
+async function mutateReceipt(id: string, input: ReceiptMutationRequest, action: "update" | "delete" | "restore", update?: UpdateReceiptRequest): Promise<{ id: string; receipt: StoredReceipt }> {
+  const request = receiptMutationSchema.parse(input);
+  const db = await database();
+  await db.beginTransaction();
+  try {
+    const mutations = await rows<{ receipt_id: string; action: string }>("SELECT receipt_id, action FROM receipt_mutations WHERE id = ?;", [request.clientMutationId]);
+    const mutation = mutations[0];
+    if (mutation && (mutation.receipt_id !== id || mutation.action !== action)) throw new Error("Diese Änderung gehört zu einem anderen Vorgang.");
+    const found = await rows<ReceiptRow>("SELECT * FROM receipts WHERE id = ? LIMIT 1;", [id]);
+    const previous = found[0];
+    if (!previous) throw new Error("Einkauf nicht gefunden.");
+    if (!mutation) {
+      if (previous.revision !== request.expectedRevision || (action === "restore" ? !previous.deleted_at : previous.deleted_at)) {
+        throw new Error("Der Beleg wurde geändert oder gelöscht. Bitte öffne ihn erneut; deine Änderungen bleiben erhalten.");
+      }
+      const timestamp = new Date().toISOString();
+      let oldValue: string | null;
+      let newValue: string | null;
+      if (update) {
+        if (update.status === "confirmed" && needsCurrencyReview(update.draft)) throw new Error("Bitte wähle oder bestätige die Währung. Der Bon kann bereits als Entwurf gespeichert werden.");
+        if (update.status === "confirmed" && !calculateReceipt(update.draft).isBalanced) throw new Error("Ein nicht ausgeglichener Bon kann nur als Entwurf gespeichert werden.");
+        oldValue = previous.draft_json;
+        newValue = JSON.stringify(update.draft);
+        await db.run(`UPDATE receipts SET draft_json = ?, status = ?, confirmed_at = ?, revision = revision + 1 WHERE id = ?;`,
+          [newValue, update.status, update.status === "confirmed" ? previous.confirmed_at ?? timestamp : null, id], false);
+      } else {
+        oldValue = JSON.stringify(previous.deleted_at);
+        newValue = JSON.stringify(action === "delete" ? timestamp : null);
+        await db.run("UPDATE receipts SET deleted_at = ?, revision = revision + 1 WHERE id = ?;", [action === "delete" ? timestamp : null, id], false);
+      }
+      await db.run("INSERT INTO receipt_mutations (id, receipt_id, action, created_at) VALUES (?, ?, ?, ?);", [request.clientMutationId, id, action, timestamp], false);
+      await db.run("INSERT INTO receipt_audit_events (id, receipt_id, action, old_value, new_value, changed_at) VALUES (?, ?, ?, ?, ?, ?);", [createUuid(), id, action, oldValue, newValue, timestamp], false);
+    }
+    await db.commitTransaction();
+  } catch (error) {
+    await db.rollbackTransaction();
+    throw error;
+  }
+  return { id, receipt: (await loadReceipt(id)).receipt };
+}
+
+export async function updateReceipt(id: string, input: UpdateReceiptRequest): Promise<{ id: string; receipt: StoredReceipt }> {
+  const request = updateReceiptSchema.parse(input);
+  return withWriteLock(() => mutateReceipt(id, request, "update", request));
+}
+
+export async function changeReceiptDeleted(id: string, input: ReceiptMutationRequest, deleted: boolean): Promise<{ id: string; receipt: StoredReceipt }> {
+  return withWriteLock(() => mutateReceipt(id, input, deleted ? "delete" : "restore"));
 }

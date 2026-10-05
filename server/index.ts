@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z, ZodError } from "zod";
-import { attachmentTokenSchema, createEmptyDraft, saveReceiptSchema } from "../shared/receipt.js";
+import { attachmentTokenSchema, createEmptyDraft, saveReceiptSchema, updateReceiptSchema, receiptMutationSchema } from "../shared/receipt.js";
 import { parsePastedReceiptJson, ReceiptImportError } from "../shared/receipt-import.js";
 import { openDatabase } from "./database.js";
 import { createBackupPayload } from "./backup.js";
@@ -16,6 +16,8 @@ import {
   listReceipts,
   ReceiptConflictError,
   saveReceipt,
+  updateReceipt,
+  changeReceiptDeleted,
   storePendingExtraction
 } from "./repository.js";
 
@@ -178,8 +180,27 @@ app.post("/api/receipts", (request, response, next) => {
 });
 
 app.get("/api/receipts", (request, response) => {
-  response.json({ receipts: listReceipts(db, typeof request.query.q === "string" ? request.query.q : "") });
+  response.json({ receipts: listReceipts(db, typeof request.query.q === "string" ? request.query.q : "", request.query.trash === "true") });
 });
+
+app.put("/api/receipts/:id", (request, response, next) => {
+  try {
+    if (!getReceipt(db, request.params.id)) return response.status(404).json({ error: "Einkauf nicht gefunden." });
+    const id = updateReceipt(db, request.params.id, updateReceiptSchema.parse(request.body));
+    response.json({ id, receipt: getReceipt(db, id) });
+  } catch (error) { next(error); }
+});
+
+for (const action of ["delete", "restore"] as const) {
+  const register = action === "delete" ? app.delete.bind(app) : app.post.bind(app);
+  register(action === "delete" ? "/api/receipts/:id" : "/api/receipts/:id/restore", (request, response, next) => {
+    try {
+      if (!getReceipt(db, request.params.id)) return response.status(404).json({ error: "Einkauf nicht gefunden." });
+      const id = changeReceiptDeleted(db, request.params.id, receiptMutationSchema.parse(request.body), action === "delete");
+      response.json({ id, receipt: getReceipt(db, id) });
+    } catch (error) { next(error); }
+  });
+}
 
 app.get("/api/receipts/:id", (request, response) => {
   const receipt = getReceipt(db, request.params.id);

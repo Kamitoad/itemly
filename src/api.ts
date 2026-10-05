@@ -1,4 +1,4 @@
-import type { AttachmentToken, ExtractionResponse, ReceiptDraft } from "../shared/receipt.js";
+import type { AttachmentToken, ExtractionResponse, ReceiptDraft, UpdateReceiptRequest, ReceiptMutationRequest } from "../shared/receipt.js";
 import { Capacitor } from "@capacitor/core";
 import * as nativeApi from "./native/api.js";
 
@@ -24,6 +24,8 @@ export interface HistoryEntry {
 
 export interface StoredReceipt {
   id: string;
+  revision: number;
+  deletedAt: string | null;
   status: "draft" | "confirmed";
   validationState: "incomplete" | "discrepancy" | "balanced";
   scannedAt: string;
@@ -89,9 +91,23 @@ export async function saveReceipt(input: {
   });
 }
 
-export function loadHistory(search = ""): Promise<{ receipts: HistoryEntry[] }> {
-  if (Capacitor.isNativePlatform()) return nativeApi.loadHistory(search);
-  return json(`/api/receipts?q=${encodeURIComponent(search)}`);
+export function loadHistory(search = "", trash = false): Promise<{ receipts: HistoryEntry[] }> {
+  if (Capacitor.isNativePlatform()) return nativeApi.loadHistory(search, trash);
+  return json(`/api/receipts?q=${encodeURIComponent(search)}&trash=${trash}`);
+}
+
+export function updateReceipt(id: string, input: UpdateReceiptRequest): Promise<{ id: string; receipt: StoredReceipt }> {
+  if (Capacitor.isNativePlatform()) return nativeApi.updateReceipt(id, input);
+  return json(`/api/receipts/${encodeURIComponent(id)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input)
+  });
+}
+
+export function changeReceiptDeleted(id: string, input: ReceiptMutationRequest, deleted: boolean): Promise<{ id: string; receipt: StoredReceipt }> {
+  if (Capacitor.isNativePlatform()) return nativeApi.changeReceiptDeleted(id, input, deleted);
+  return json(`/api/receipts/${encodeURIComponent(id)}${deleted ? "" : "/restore"}`, {
+    method: deleted ? "DELETE" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input)
+  });
 }
 
 export function loadReceipt(id: string): Promise<{ receipt: StoredReceipt }> {

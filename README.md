@@ -26,7 +26,9 @@ Many receipt apps require an account, cloud storage, or a paid AI service. Iteml
 - Camera and gallery selection with preview and explicit consent before external processing
 - Validated JSON import from a regular ChatGPT chat
 - A fully manual workflow without AI access
-- Editing of merchant, item, payment, and total details during review
+- Editing of merchant, item, payment, and total details during review and after saving
+- Item creation, editing, and removal within an existing receipt
+- Receipt trash and restoration without losing original images or extraction evidence
 - Uncertainty markers for extracted items and fields
 - Arithmetic checks for line items, discounts, taxes, deposits, and fees
 - Drafts and atomic, idempotent saves of balanced purchases

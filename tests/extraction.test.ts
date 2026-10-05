@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManualExtractor, OpenAICompatibleExtractor } from "../server/extraction.js";
 import { parsePastedReceiptJson, ReceiptImportError } from "../shared/receipt-import.js";
 import { calculateReceipt } from "../shared/receipt.js";
+import { needsCurrencyReview, UNKNOWN_CURRENCY } from "../shared/currency.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -21,6 +22,32 @@ describe("extraction adapters", () => {
 });
 
 describe("pasted ChatGPT receipt JSON", () => {
+  it.each([null, "", "not visible", 123, {}, undefined])("imports a missing or malformed currency (%j) as an incomplete draft", (currency) => {
+    const content = JSON.stringify({ currency, totalMinor: 525, items: [{ lineTotalMinor: 525 }] });
+    const { draft, rawResult } = parsePastedReceiptJson(content);
+    expect(rawResult).toEqual(JSON.parse(content));
+    expect(draft.currency).toBe(UNKNOWN_CURRENCY);
+    expect(draft.totalMinor).toBe(525);
+    expect(draft.uncertaintyFields).toContain("currency");
+    expect(needsCurrencyReview(draft)).toBe(true);
+  });
+
+  it("normalizes lowercase currency codes without rewriting raw AI output", () => {
+    const { draft, rawResult } = parsePastedReceiptJson('{"currency":" cad "}');
+    expect(draft.currency).toBe("CAD");
+    expect(rawResult).toEqual({ currency: " cad " });
+    expect(needsCurrencyReview(draft)).toBe(false);
+  });
+
+  it("accepts a missing currency alongside the maximum number of uncertainty paths", () => {
+    const { draft } = parsePastedReceiptJson(JSON.stringify({
+      currency: null,
+      uncertaintyFields: Array.from({ length: 100 }, (_, index) => `items[${index}].sku`)
+    }));
+    expect(draft.uncertaintyFields).toHaveLength(100);
+    expect(needsCurrencyReview(draft)).toBe(true);
+  });
+
   it("accepts a fenced JSON object and normalizes it into an unverified draft", () => {
     const content = `\`\`\`json
       {

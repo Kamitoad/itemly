@@ -56,6 +56,9 @@ The generated Android project uses the application ID `com.kamitoad.itemly`. No 
 - Turn on airplane mode and repeat capture, save, history, and detail. Check that no PC API request occurs.
 - Attempt to save an unbalanced confirmed receipt; it must be rejected while the draft remains editable.
 - Retry the same save after a simulated interruption and check that only one receipt appears.
+- Edit a saved receipt, add/change/remove items, and verify the same receipt ID and original image after restarting. Incomplete edits must remain drafts.
+- Move a receipt to the trash, restart, and restore it with all items and its image. Trash is not permanent erasure.
+- Open the same receipt twice and attempt a stale update; the newer revision must not be overwritten.
 - Test low-storage and failed-image-write behavior. A receipt must not point at an incomplete image.
 
 The prototype is not accepted until these checks pass on a physical Samsung device and backup/restore is implemented. Keep issue #12 and #13 open until then.
