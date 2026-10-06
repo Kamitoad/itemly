@@ -55,7 +55,8 @@ public class BackupDocumentsPlugin extends Plugin {
             Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
             intent.setType("application/json");
-            intent.putExtra(Intent.EXTRA_TITLE, "itemly-backup-" + java.time.LocalDate.now() + ".json");
+            String date = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT).format(new java.util.Date());
+            intent.putExtra(Intent.EXTRA_TITLE, "itemly-backup-" + date + ".json");
             startActivityForResult(call, intent, "saveResult");
         } catch (Exception error) {
             release();
