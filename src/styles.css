@@ -547,3 +547,11 @@ html[data-theme="dark"] * { scrollbar-color: #3e5e52 #0c1419; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.backup-panel { margin: 28px 0 90px; min-width: 0; overflow-wrap: anywhere; }
+.backup-panel > summary { cursor: pointer; color: var(--green); font-weight: 700; font-size: 18px; min-height: 44px; }
+.backup-panel p { line-height: 1.6; }
+.backup-buttons { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+.backup-buttons .button { flex: 1 1 180px; min-width: 0; white-space: normal; }
+.backup-preview { border-top: 1px solid var(--line); padding-top: 16px; margin-top: 20px; }
+.backup-privacy { padding: 14px; border: 1px solid var(--line); border-radius: 14px; }

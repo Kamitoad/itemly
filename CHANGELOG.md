@@ -6,8 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Android user-initiated full backup export via the system document picker, including receipt images, original extraction data, drafts, trash, audit history, and preferences.
+- Validated, empty-database-only Android restore with a confirmation preview, image checksums, transactional writes, rollback, and failure cleanup.
+- A manually dispatched durable-signed preview APK workflow and protected local signing setup, allowing later APKs to install as updates without deleting receipts.
+- Backup corruption, restore failure, document cancellation, preference failure, and signing-boundary tests. Physical-device update/restore acceptance is still pending.
+
 ### Changed
 
+- Automatic Android PR jobs now validate native compilation/signing with a throwaway key but do not distribute APKs; installable update artifacts are manually requested only.
 - The receipt overview is now the home screen and lists purchases newest first.
 - A floating “New receipt” button starts capture from anywhere in the overview.
 - Cards, date display, empty states, and responsive spacing were refined for more intuitive mobile navigation.

@@ -21,6 +21,7 @@ import { groupHistoryEntries } from "../history.js";
 import type { AppConfig, HistoryEntry, StoredReceipt } from "../api.js";
 import initialMigration from "./migrations/001_initial.sql?raw";
 import crudMigration from "./migrations/002_receipt_crud.sql?raw";
+import { validateNativeBackup, type NativeBackup } from "../../shared/native-backup.js";
 
 type ReceiptRow = {
   id: string;
@@ -178,6 +179,7 @@ async function imageFromFile(file: File): Promise<AttachmentToken> {
 
 async function existingDuplicate(sha256: string | undefined): Promise<string | null> {
   if (!sha256) return null;
+  await writeQueue;
   const match = await rows<{ id: string }>("SELECT id FROM receipts WHERE image_sha256 = ? AND deleted_at IS NULL LIMIT 1;", [sha256]);
   return match[0]?.id ?? null;
 }
@@ -273,8 +275,8 @@ export async function saveReceipt(input: SaveReceiptRequest): Promise<{ id: stri
   return withWriteLock(() => saveNewReceipt(input));
 }
 
-// A connection cannot host overlapping transactions. Serialize writes without
-// blocking reads, and let SQLite enforce revision checks within each transaction.
+// A connection cannot host overlapping transactions. Queue public reads too,
+// so a concurrent history view never observes a partially restored transaction.
 let writeQueue: Promise<unknown> = Promise.resolve();
 function withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
   const result = writeQueue.then(operation);
@@ -322,6 +324,10 @@ async function saveNewReceipt(input: SaveReceiptRequest): Promise<{ id: string; 
 }
 
 export async function loadHistory(search = "", trash = false): Promise<{ receipts: HistoryEntry[] }> {
+  return withWriteLock(() => loadHistoryUnlocked(search, trash));
+}
+
+async function loadHistoryUnlocked(search: string, trash: boolean): Promise<{ receipts: HistoryEntry[] }> {
   const all = await rows<ReceiptRow>("SELECT * FROM receipts ORDER BY scanned_at DESC;");
   const term = search.trim().toLocaleLowerCase();
   const entries = all.flatMap((row) => {
@@ -346,6 +352,10 @@ export async function loadHistory(search = "", trash = false): Promise<{ receipt
 }
 
 export async function loadReceipt(id: string): Promise<{ receipt: StoredReceipt }> {
+  return withWriteLock(() => loadReceiptUnlocked(id));
+}
+
+async function loadReceiptUnlocked(id: string): Promise<{ receipt: StoredReceipt }> {
   const match = await rows<ReceiptRow>("SELECT * FROM receipts WHERE id = ? LIMIT 1;", [id]);
   if (!match[0]) throw new Error("Einkauf nicht gefunden.");
   return { receipt: await mapReceipt(match[0]) };
@@ -389,7 +399,7 @@ async function mutateReceipt(id: string, input: ReceiptMutationRequest, action: 
     await db.rollbackTransaction();
     throw error;
   }
-  return { id, receipt: (await loadReceipt(id)).receipt };
+  return { id, receipt: (await loadReceiptUnlocked(id)).receipt };
 }
 
 export async function updateReceipt(id: string, input: UpdateReceiptRequest): Promise<{ id: string; receipt: StoredReceipt }> {
@@ -399,4 +409,79 @@ export async function updateReceipt(id: string, input: UpdateReceiptRequest): Pr
 
 export async function changeReceiptDeleted(id: string, input: ReceiptMutationRequest, deleted: boolean): Promise<{ id: string; receipt: StoredReceipt }> {
   return withWriteLock(() => mutateReceipt(id, input, deleted ? "delete" : "restore"));
+}
+
+export async function createNativeBackup(preferences: NativeBackup["preferences"]): Promise<NativeBackup> {
+  return withWriteLock(async () => {
+    const receipts = await rows<ReceiptRow>("SELECT * FROM receipts ORDER BY id;");
+    const mutations = await rows<NativeBackup["mutations"][number]>("SELECT * FROM receipt_mutations ORDER BY id;");
+    const auditEvents = await rows<NativeBackup["auditEvents"][number]>("SELECT * FROM receipt_audit_events ORDER BY id;");
+    const images = new Map<string, NativeBackup["images"][number]>();
+    let totalBase64 = 0;
+    for (const row of receipts) {
+      if (!row.attachment_json) continue;
+      const attachment = attachmentTokenSchema.parse(JSON.parse(row.attachment_json));
+      if (images.has(attachment.token)) continue;
+      let data: string | Blob;
+      try {
+        ({ data } = await Filesystem.readFile({ path: imagePath(attachment.token), directory: Directory.Data }));
+      } catch {
+        throw new Error("Ein gespeichertes Bonbild fehlt oder ist nicht lesbar. Die vollständige Sicherung wurde nicht erstellt.");
+      }
+      if (typeof data !== "string") throw new Error("Ein Bonbild konnte nicht gesichert werden.");
+      totalBase64 += data.length;
+      if (totalBase64 > 100 * 1024 * 1024) throw new Error("Die Sicherung ist zu groß. Unterstützt werden derzeit bis zu 100 MB.");
+      images.set(attachment.token, { token: attachment.token, sha256: attachment.sha256, mimeType: attachment.mimeType, dataBase64: data });
+    }
+    return validateNativeBackup({ format: "itemly-android-backup", version: 1, exportedAt: new Date().toISOString(), receipts, mutations, auditEvents, images: [...images.values()], preferences });
+  });
+}
+
+export async function restoreNativeBackup(raw: unknown): Promise<NativeBackup["preferences"]> {
+  const backup = await validateNativeBackup(raw);
+  return withWriteLock(async () => {
+    const db = await database();
+    await db.beginTransaction();
+    const createdImages: string[] = [];
+    try {
+      // Include trash and ledgers: never overwrite an existing installation.
+      for (const table of ["receipts", "receipt_mutations", "receipt_audit_events"]) {
+        const count = await rows<{ count: number }>(`SELECT COUNT(*) AS count FROM ${table};`);
+        if (count[0]?.count !== 0) throw new Error("Wiederherstellen ist nur in einer leeren Datenbank möglich – auch der Papierkorb muss leer sein. Vorhandene Daten werden nicht überschrieben.");
+      }
+      for (const image of backup.images) {
+        const path = imagePath(image.token);
+        let exists = false;
+        try { await Filesystem.stat({ path, directory: Directory.Data }); exists = true; } catch { /* New image. */ }
+        if (exists) {
+          // The DB is empty, so a damaged file is an orphan from an interrupted
+          // capture/restore, not an existing receipt to overwrite.
+          try { await verifyStoredImage(path, image.sha256); } catch { exists = false; }
+        }
+        if (!exists) {
+          createdImages.push(path);
+          await Filesystem.writeFile({ path, directory: Directory.Data, data: image.dataBase64, recursive: true });
+        }
+        await verifyStoredImage(path, image.sha256);
+      }
+      for (const row of backup.receipts) {
+        await db.run(`INSERT INTO receipts (id, revision, deleted_at, client_mutation_id, status, scanned_at, confirmed_at, draft_json, attachment_json, image_sha256, extraction_json)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`, [row.id, row.revision, row.deleted_at, row.client_mutation_id, row.status, row.scanned_at, row.confirmed_at, row.draft_json, row.attachment_json, row.image_sha256, row.extraction_json], false);
+      }
+      for (const row of backup.mutations) {
+        await db.run("INSERT INTO receipt_mutations (id, receipt_id, action, created_at) VALUES (?, ?, ?, ?);", [row.id, row.receipt_id, row.action, row.created_at], false);
+      }
+      for (const row of backup.auditEvents) {
+        await db.run("INSERT INTO receipt_audit_events (id, receipt_id, action, old_value, new_value, changed_at) VALUES (?, ?, ?, ?, ?, ?);", [row.id, row.receipt_id, row.action, row.old_value, row.new_value, row.changed_at], false);
+      }
+      await db.commitTransaction();
+    } catch (error) {
+      await db.rollbackTransaction();
+      // A process kill can leave orphan images, but never partial DB records.
+      // Startup pruning reclaims them; ordinary failures clean them immediately.
+      for (const path of createdImages) await Filesystem.deleteFile({ path, directory: Directory.Data }).catch(() => undefined);
+      throw error;
+    }
+    return backup.preferences;
+  });
 }

@@ -12,6 +12,7 @@ import {
 import { chatGptReceiptPrompt } from "../shared/receipt-import";
 import { replaceReceiptItems } from "../shared/receipt-edit";
 import { copyText } from "./clipboard";
+import BackupPanel from "./BackupPanel";
 import { Capacitor } from "@capacitor/core";
 import { groupHistoryEntries } from "./history";
 import { selectNativeImage } from "./native/image-picker";
@@ -799,6 +800,7 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [trash, setTrash] = useState(false);
+  const [backupRevision, setBackupRevision] = useState(0);
   const groups = useMemo(() => groupHistoryEntries(entries), [entries]);
 
   useEffect(() => {
@@ -808,7 +810,7 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
       loadHistory(search, trash).then((result) => { if (active) { setEntries(result.receipts); setError(null); } }).catch((reason: Error) => { if (active) setError(reason.message); }).finally(() => { if (active) setLoading(false); });
     }, 180);
     return () => { active = false; window.clearTimeout(handle); };
-  }, [search, trash]);
+  }, [search, trash, backupRevision]);
 
   return (
     <section className="page history-page">
@@ -849,7 +851,7 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
           ))}
         </div>
       )}
-      <a className="backup-link" href="/api/backup"><DownloadIcon /> Vollständiges Backup herunterladen</a>
+      {Capacitor.isNativePlatform() ? <BackupPanel onRestored={() => setBackupRevision((value) => value + 1)} /> : <a className="backup-link" href="/api/backup"><DownloadIcon /> Vollständiges Backup herunterladen</a>}
       <button className="receipt-fab" onClick={onNew} aria-label="Neuen Bon hinzufügen"><span aria-hidden="true">＋</span><strong>Neuer Bon</strong></button>
     </section>
   );
@@ -889,7 +891,7 @@ function DetailScreen({ receipt, onBack, onNew, onEdit, onDelete, onRestore, sav
       </section>
       <section className="summary-card balanced detail-summary"><div className="summary-rows"><div><span>Positionen</span><strong>{formatMoney(calculations.itemsTotalMinor, draft.currency)}</strong></div><div><span>Steuern</span><strong>{formatMoney(draft.taxTotalMinor, draft.currency)}</strong></div><div className="emphasized"><span>Gesamt</span><strong>{formatMoney(draft.totalMinor, draft.currency)}</strong></div></div></section>
       {draft.notes && <section className="section-card detail-notes"><h2>Weitere Informationen</h2><p>{draft.notes}</p></section>}
-      <div className="export-actions"><a className="button secondary" href={`/api/receipts/${receipt.id}/export.json`}><CodeIcon /> JSON exportieren</a><a className="button primary" href={`/api/receipts/${receipt.id}/export.bundle.json`}><DownloadIcon /> Daten + Bonbild</a></div>
+      {Capacitor.isNativePlatform() ? <p className="backup-link">Vollständige Handy-Sicherung unter „Zum Verlauf“ → „Daten &amp; Sicherung“.</p> : <div className="export-actions"><a className="button secondary" href={`/api/receipts/${receipt.id}/export.json`}><CodeIcon /> JSON exportieren</a><a className="button primary" href={`/api/receipts/${receipt.id}/export.bundle.json`}><DownloadIcon /> Daten + Bonbild</a></div>}
     </section>
   );
 }

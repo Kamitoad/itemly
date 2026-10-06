@@ -46,7 +46,15 @@ In the web runtime, SQLite stores merchant snapshots, purchases, items, adjustme
 
 Original images are content-addressed and stored beside the database. Portable backups include the database and images, but do not modify any external backup destination.
 
-In the Android prototype, a separate app-private SQLite database stores each validated receipt draft and metadata in one atomic row. The app-private Filesystem directory stores content-addressed originals before the SQLite reference is committed. The native schema uses `PRAGMA user_version` and an explicit migration in `src/native/migrations/`. The two databases are not synchronized. Backup, restore, and real-device verification are still open work.
+In the Android prototype, a separate app-private SQLite database stores each validated receipt draft and metadata in one atomic row. The app-private Filesystem directory stores content-addressed originals before the SQLite reference is committed. The native schema uses `PRAGMA user_version` and explicit migrations in `src/native/migrations/`. The two databases are not synchronized. Android backup/restore uses a versioned logical JSON snapshot rather than copying an open SQLite file. It does not change the database schema, so no new migration is required. Real-device acceptance remains open.
+
+## Android backup and update boundaries
+
+`shared/native-backup.ts` validates the Android-specific versioned envelope, receipt rows, relational identities, audit/mutation history, attachment references, and image SHA-256 digests. Raw extraction and audit JSON are retained as data, never executed. Confirmed receipts must satisfy existing currency and arithmetic invariants; incomplete drafts stay incomplete. `src/native/api.ts` serializes complete snapshots/restores with normal mutations and public reads, preventing partial reads on the shared SQLite connection. Restore is empty-target-only, parameterized, and transactional. Image writes are verified before references commit; failure cleans new images, with orphan pruning handling interrupted processes.
+
+`BackupDocumentsPlugin.java` uses Android Storage Access Framework create/open document intents with no broad storage permission. It streams selected documents to/from strictly named private cache files, enforces a 100 MB size limit even when the provider does not publish a size, and verifies exported bytes by reading the destination back. TypeScript handles snapshot validation, preview, explicit restore confirmation, and private cache cleanup. UI exports route to these native functions on Android, never to `/api/backup`. Existing web backup routes remain unchanged; format conversion is separate future work.
+
+The manually dispatched `android-signed-apk.yml` uses a persistent, privately backed-up signing key from repository secrets, retains `com.kamitoad.itemly.preview`, and generates increasing time-based version codes. It fails without credentials rather than signing a replacement identity. Automated PR validation uses a disposable key to exercise the signing configuration, but does not distribute APKs or access real signing credentials. Historical temporary-key APKs are not interchangeable with durable updates. See [Android setup and acceptance](ANDROID.md).
 
 ## Currency review
 

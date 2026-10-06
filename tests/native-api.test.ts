@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseSync } from "node:sqlite";
 import { createEmptyDraft, createEmptyItem, createUuid } from "../shared/receipt.js";
 import { applyCurrencyPreference, confirmCurrency } from "../shared/currency.js";
+import { parseNativeBackup } from "../shared/native-backup.js";
 
 type TestRow = {
   id: string;
@@ -80,6 +81,117 @@ beforeEach(() => {
 });
 
 describe("phone-local receipt adapter", () => {
+  async function createBackupFixture() {
+    const bytes = new TextEncoder().encode("backup-image");
+    const file = { name: "receipt.jpg", type: "image/jpeg", size: bytes.byteLength, arrayBuffer: async () => bytes.buffer } as unknown as File;
+    const imported = await nativeApi.importChatGptReceipt('{"merchantName":"Original shop","currency":"CAD","totalMinor":250,"items":[{"rawName":"Eggs","lineTotalMinor":250,"quantity":"1.000001","uncertainties":["sku"]}]}', file);
+    const saved = await nativeApi.saveReceipt({ clientMutationId: createUuid(), status: "confirmed", draft: imported.draft, attachment: imported.attachment, extractionId: imported.extraction.id });
+    await nativeApi.updateReceipt(saved.id, { clientMutationId: createUuid(), expectedRevision: 1, status: "confirmed", draft: { ...saved.receipt.draft, notes: "Reviewed" } });
+    await nativeApi.changeReceiptDeleted(saved.id, { clientMutationId: createUuid(), expectedRevision: 2 }, true);
+    await nativeApi.saveReceipt({ clientMutationId: createUuid(), status: "draft", draft: createEmptyDraft(), attachment: null, extractionId: null });
+    return nativeApi.createNativeBackup({ lastCurrency: "CAD", theme: "dark" });
+  }
+
+  function clearDatabase() {
+    state.db!.exec("DELETE FROM receipt_audit_events; DELETE FROM receipt_mutations; DELETE FROM receipts;");
+    state.images.clear();
+  }
+
+  it("round-trips complete backups including trash, exact quantities, original extraction and audit history", async () => {
+    const backup = await createBackupFixture();
+    const original = structuredClone(backup);
+    clearDatabase();
+    const validated = await parseNativeBackup(JSON.stringify(backup));
+    await expect(nativeApi.restoreNativeBackup(validated)).resolves.toEqual({ lastCurrency: "CAD", theme: "dark" });
+    const restored = await nativeApi.createNativeBackup(original.preferences);
+    expect({ ...restored, exportedAt: original.exportedAt }).toEqual(original);
+    expect((await nativeApi.loadHistory()).receipts).toHaveLength(1);
+    expect((await nativeApi.loadHistory("", true)).receipts).toHaveLength(1);
+    const archived = original.receipts.find((row) => row.deleted_at)!;
+    expect((await nativeApi.loadReceipt(archived.id)).receipt.draft.items[0].quantity).toBe("1.000001");
+    await nativeApi.changeReceiptDeleted(archived.id, { clientMutationId: createUuid(), expectedRevision: 3 }, false);
+    expect((await nativeApi.loadHistory()).receipts).toHaveLength(2);
+  });
+
+  it("refuses restore into an installation containing only trash and leaves it untouched", async () => {
+    const backup = await createBackupFixture();
+    const before = JSON.stringify(state.records);
+    await expect(nativeApi.restoreNativeBackup(backup)).rejects.toThrow("leeren Datenbank");
+    expect(JSON.stringify(state.records)).toBe(before);
+    expect(state.images.size).toBe(1);
+  });
+
+  it("validates backup images, identities, relations, schema version and confirmed arithmetic before writing", async () => {
+    const backup = await createBackupFixture();
+    clearDatabase();
+    const corrupted = structuredClone(backup); corrupted.images[0].dataBase64 = btoa("tampered");
+    await expect(nativeApi.restoreNativeBackup(corrupted)).rejects.toThrow("Prüfsumme");
+    const missing = structuredClone(backup); missing.images = [];
+    await expect(nativeApi.restoreNativeBackup(missing)).rejects.toThrow("Bonbild");
+    const duplicate = structuredClone(backup); duplicate.receipts.push(duplicate.receipts[0]);
+    await expect(nativeApi.restoreNativeBackup(duplicate)).rejects.toThrow("doppelte");
+    const dangling = structuredClone(backup); dangling.mutations[0].receipt_id = createUuid();
+    await expect(nativeApi.restoreNativeBackup(dangling)).rejects.toThrow("Änderungsverlauf");
+    const unbalanced = structuredClone(backup); const receipt = unbalanced.receipts.find((row) => row.status === "confirmed")!;
+    receipt.draft_json = JSON.stringify({ ...JSON.parse(receipt.draft_json), totalMinor: 999 });
+    await expect(nativeApi.restoreNativeBackup(unbalanced)).rejects.toThrow("ausgeglichen");
+    const traversal = structuredClone(backup); traversal.images[0].token = "../../secret";
+    await expect(nativeApi.restoreNativeBackup(traversal)).rejects.toThrow("unterstützte");
+    await expect(parseNativeBackup("not json")).rejects.toThrow("gültiges JSON");
+    await expect(nativeApi.restoreNativeBackup({ ...backup, version: 2 })).rejects.toThrow("unterstützte");
+    expect(state.db!.prepare("SELECT COUNT(*) AS count FROM receipts").get()).toMatchObject({ count: 0 });
+    expect(state.images.size).toBe(0);
+  });
+
+  it("rolls back all restored rows and cleans up newly written images if audit insertion fails", async () => {
+    const backup = await createBackupFixture();
+    clearDatabase();
+    state.db!.exec("CREATE TEMP TRIGGER fail_restore BEFORE INSERT ON receipt_audit_events BEGIN SELECT RAISE(ABORT, 'Restore failed'); END;");
+    try {
+      await expect(nativeApi.restoreNativeBackup(backup)).rejects.toThrow("Restore failed");
+      expect(state.db!.prepare("SELECT COUNT(*) AS count FROM receipts").get()).toMatchObject({ count: 0 });
+      expect(state.db!.prepare("SELECT COUNT(*) AS count FROM receipt_mutations").get()).toMatchObject({ count: 0 });
+      expect(state.images.size).toBe(0);
+    } finally { state.db!.exec("DROP TRIGGER fail_restore;"); }
+    await expect(nativeApi.restoreNativeBackup(backup)).resolves.toHaveProperty("lastCurrency", "CAD");
+  });
+
+  it("keeps a failed image restore empty and allows retry", async () => {
+    const backup = await createBackupFixture();
+    clearDatabase();
+    state.failImageWrite = true;
+    try {
+      await expect(nativeApi.restoreNativeBackup(backup)).rejects.toThrow("Disk full");
+      expect(state.db!.prepare("SELECT COUNT(*) AS count FROM receipts").get()).toMatchObject({ count: 0 });
+    } finally { state.failImageWrite = false; }
+    await expect(nativeApi.restoreNativeBackup(backup)).resolves.toHaveProperty("lastCurrency", "CAD");
+  });
+
+  it("serializes simultaneous restores and rejects the second without duplicating receipts", async () => {
+    const backup = await createBackupFixture();
+    clearDatabase();
+    const results = await Promise.allSettled([nativeApi.restoreNativeBackup(backup), nativeApi.restoreNativeBackup(backup)]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(state.db!.prepare("SELECT COUNT(*) AS count FROM receipts").get()).toMatchObject({ count: 2 });
+  });
+
+  it("will not export a backup with a missing or damaged image", async () => {
+    await createBackupFixture();
+    const path = [...state.images.keys()][0];
+    state.images.set(path, btoa("broken"));
+    await expect(nativeApi.createNativeBackup({ lastCurrency: null, theme: null })).rejects.toThrow("Prüfsumme");
+    state.images.delete(path);
+    await expect(nativeApi.createNativeBackup({ lastCurrency: null, theme: null })).rejects.toThrow("Bonbild fehlt");
+  });
+
+  it("repairs an interrupted orphan image on an otherwise empty restore target", async () => {
+    const backup = await createBackupFixture();
+    clearDatabase();
+    state.images.set(`receipts/${backup.images[0].token}`, btoa("partial"));
+    await expect(nativeApi.restoreNativeBackup(backup)).resolves.toHaveProperty("lastCurrency", "CAD");
+    expect(state.images.get(`receipts/${backup.images[0].token}`)).toBe(backup.images[0].dataBase64);
+  });
+
   it("serializes concurrent updates and accepts only one edit of a revision", async () => {
     const draft = createEmptyDraft("CAD");
     const saved = await nativeApi.saveReceipt({ clientMutationId: createUuid(), status: "draft", draft, attachment: null, extractionId: null });

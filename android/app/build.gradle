@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+def durableSigning = project.findProperty('itemlyDurableSigning') == 'true'
+def signingValues = ['ITEMLY_SIGNING_STORE', 'ITEMLY_SIGNING_PASSWORD', 'ITEMLY_SIGNING_ALIAS', 'ITEMLY_SIGNING_KEY_PASSWORD'].collectEntries { [(it): System.getenv(it)] }
+if (durableSigning && (signingValues.values().any { !it } || project.findProperty('itemlyPreview') != 'true' || project.findProperty('itemlyLive') == 'true')) {
+    throw new GradleException('Durable signing requires all signing variables and a standalone preview build. No temporary-key fallback is allowed.')
+}
+
 android {
     namespace = "com.kamitoad.itemly"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +13,8 @@ android {
         applicationId "com.kamitoad.itemly"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode (project.findProperty('itemlyVersionCode') ?: '1').toInteger()
+        versionName project.findProperty('itemlyVersionName') ?: '1.0'
         manifestPlaceholders = [itemlyLabel: 'Itemly']
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -17,8 +23,20 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (durableSigning) {
+            durablePreview {
+                storeFile file(signingValues['ITEMLY_SIGNING_STORE'])
+                storeType 'PKCS12'
+                storePassword signingValues['ITEMLY_SIGNING_PASSWORD']
+                keyAlias signingValues['ITEMLY_SIGNING_ALIAS']
+                keyPassword signingValues['ITEMLY_SIGNING_KEY_PASSWORD']
+            }
+        }
+    }
     buildTypes {
         debug {
+            if (durableSigning) signingConfig signingConfigs.durablePreview
             // Opt-in local live-reload build. A separate app ID keeps an
             // existing CI APK and its phone-local data untouched.
             if (project.findProperty('itemlyLive') == 'true') {

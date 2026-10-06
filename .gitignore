@@ -8,3 +8,8 @@ data/
 .DS_Store
 .idea/
 coverage/
+.local/
+*.p12
+*.jks
+*.keystore
+*.pem

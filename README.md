@@ -9,6 +9,8 @@ Itemly is a mobile-first, self-hosted web app for structured purchase data. Rece
 
 An experimental Android package is now being developed for phone-local use without a running computer. It is not yet a verified release; see [Android prototype](docs/ANDROID.md) before installing or relying on it.
 
+Android now includes **Daten & Sicherung** for user-initiated full export/restore and a separate **Android installable update APK** workflow for durable-signed updates. Signing setup and device acceptance are required; do not alternate durable update APKs with disposable PR artifacts. Android and webserver backups currently use different formats.
+
 ![Itemly in dark mode](docs/images/itemly-home.jpg)
 
 ## Why Itemly?
