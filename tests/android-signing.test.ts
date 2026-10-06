@@ -24,6 +24,7 @@ describe("Android signing workflow boundaries", () => {
     expect(gradle).toContain("applicationIdSuffix '.preview'");
     expect(gradle).toContain("if (durableSigning) signingConfig signingConfigs.durablePreview");
     expect(gradle).toContain("itemlyVersionCode");
+    expect(gradle).toContain("versionName (project.findProperty('itemlyVersionName') ?: '1.0')");
     expect(read(".gitignore")).toContain(".local/");
     expect(read("scripts/setup-android-signing.ps1")).toContain("Refusing to overwrite");
   });

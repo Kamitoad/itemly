@@ -14,7 +14,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode (project.findProperty('itemlyVersionCode') ?: '1').toInteger()
-        versionName project.findProperty('itemlyVersionName') ?: '1.0'
+        versionName (project.findProperty('itemlyVersionName') ?: '1.0')
         manifestPlaceholders = [itemlyLabel: 'Itemly']
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
