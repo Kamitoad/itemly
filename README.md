@@ -7,6 +7,10 @@
 
 Itemly is a mobile-first, self-hosted web app for structured purchase data. Receipt images and data stay on your own computer by default. You can enter receipts manually, use a free copy-and-paste workflow with a regular ChatGPT chat, or optionally configure an OpenAI-compatible API provider.
 
+An experimental Android package is now being developed for phone-local use without a running computer. It is not yet a verified release; see [Android prototype](docs/ANDROID.md) before installing or relying on it.
+
+Android now includes **Daten & Sicherung** for user-initiated full export/restore and a separate **Android installable update APK** workflow for durable-signed updates. Signing setup and device acceptance are required; do not alternate durable update APKs with disposable PR artifacts. Android and webserver backups currently use different formats.
+
 ![Itemly in dark mode](docs/images/itemly-home.jpg)
 
 ## Why Itemly?
@@ -24,7 +28,9 @@ Many receipt apps require an account, cloud storage, or a paid AI service. Iteml
 - Camera and gallery selection with preview and explicit consent before external processing
 - Validated JSON import from a regular ChatGPT chat
 - A fully manual workflow without AI access
-- Editing of merchant, item, payment, and total details during review
+- Editing of merchant, item, payment, and total details during review and after saving
+- Item creation, editing, and removal within an existing receipt
+- Receipt trash and restoration without losing original images or extraction evidence
 - Uncertainty markers for extracted items and fields
 - Arithmetic checks for line items, discounts, taxes, deposits, and fees
 - Drafts and atomic, idempotent saves of balanced purchases
@@ -61,6 +67,10 @@ pnpm start
 The complete app is then served at `http://localhost:8787`.
 
 Itemly v0.1.0 has no user accounts or access control. Run the server only on a private computer or trusted home network unless you add suitable access protection. Do not expose it directly to the public internet.
+
+## Experimental Android build
+
+The Android project is in `android/`. It bundles the React UI and routes receipt capture, manual entry, ChatGPT JSON import, saves, history, and detail views to app-private storage rather than the PC API. After installing Android Studio and its SDK, run `pnpm android:sync`, open the project with `pnpm android:open`, and deploy a debug build to a device. The [Android prototype guide](docs/ANDROID.md) lists the required real-device tests and current limitations. Existing receipts in the PC database are **not** automatically copied to the phone. Phone backup/restore is not implemented yet; do not treat the prototype as the only copy of important receipts.
 
 ## Capture receipts without an API key
 

@@ -1,9 +1,14 @@
 import type { ReceiptDatabase } from "./database.js";
+import { needsCurrencyReview } from "../shared/currency.js";
 import {
   calculateReceipt,
   receiptDraftSchema,
+  updateReceiptSchema,
+  receiptMutationSchema,
   type ReceiptDraft,
-  type SaveReceiptRequest
+  type SaveReceiptRequest,
+  type UpdateReceiptRequest,
+  type ReceiptMutationRequest
 } from "../shared/receipt.js";
 
 export class ReceiptConflictError extends Error {}
@@ -18,7 +23,7 @@ function normalizedMerchant(name: string): string {
 
 function validationState(draft: ReceiptDraft): "incomplete" | "discrepancy" | "balanced" {
   const calculation = calculateReceipt(draft);
-  if (draft.totalMinor === null || calculation.missingPriceCount > 0) return "incomplete";
+  if (draft.totalMinor === null || calculation.missingPriceCount > 0 || needsCurrencyReview(draft)) return "incomplete";
   return calculation.isBalanced ? "balanced" : "discrepancy";
 }
 
@@ -50,28 +55,56 @@ export function storePendingExtraction(
 }
 
 export function findDuplicateByHash(db: ReceiptDatabase, sha256: string): string | null {
-  const row = db.prepare("SELECT receipt_id FROM attachments WHERE sha256 = ? LIMIT 1").get(sha256) as
+  const row = db.prepare("SELECT a.receipt_id FROM attachments a JOIN receipts r ON r.id = a.receipt_id WHERE a.sha256 = ? AND r.deleted_at IS NULL LIMIT 1").get(sha256) as
     | { receipt_id: string }
     | undefined;
   return row?.receipt_id ?? null;
 }
 
 export function saveReceipt(db: ReceiptDatabase, request: SaveReceiptRequest): string {
+  return persistReceipt(db, request);
+}
+
+export function updateReceipt(db: ReceiptDatabase, id: string, input: UpdateReceiptRequest): string {
+  const request = updateReceiptSchema.parse(input);
+  if (mutationAlreadyApplied(db, id, request.clientMutationId, "update")) return id;
+  return persistReceipt(db, { ...request, attachment: null, extractionId: null }, { id, expectedRevision: request.expectedRevision });
+}
+
+function mutationAlreadyApplied(db: ReceiptDatabase, id: string, mutationId: string, action: string): boolean {
+  const previous = db.prepare("SELECT receipt_id, action FROM receipt_mutations WHERE id = ?").get(mutationId) as { receipt_id: string; action: string } | undefined;
+  if (previous && (previous.receipt_id !== id || previous.action !== action)) throw new ReceiptConflictError("Diese Änderung gehört zu einem anderen Vorgang.");
+  return Boolean(previous);
+}
+
+function persistReceipt(db: ReceiptDatabase, request: SaveReceiptRequest, update?: { id: string; expectedRevision: number }): string {
   const existing = db.prepare("SELECT id FROM receipts WHERE client_mutation_id = ?").get(request.clientMutationId) as
     | { id: string }
     | undefined;
-  if (existing) return existing.id;
+  if (existing && !update) return existing.id;
+  if (existing && update) throw new ReceiptConflictError("Diese Änderungs-ID wurde bereits verwendet.");
 
   const draft = receiptDraftSchema.parse(request.draft);
+  if (request.status === "confirmed" && needsCurrencyReview(draft)) {
+    throw new ReceiptConflictError("Bitte wähle oder bestätige die Währung. Der Bon kann bereits als Entwurf gespeichert werden.");
+  }
   const calculation = calculateReceipt(draft);
   if (request.status === "confirmed" && !calculation.isBalanced) {
     throw new ReceiptConflictError("Ein nicht ausgeglichener Bon kann nur als Entwurf gespeichert werden.");
   }
 
-  const receiptId = crypto.randomUUID();
+  const receiptId = update?.id ?? crypto.randomUUID();
   const createdAt = now();
   db.exec("BEGIN IMMEDIATE");
   try {
+    if (update && mutationAlreadyApplied(db, receiptId, request.clientMutationId, "update")) {
+      db.exec("COMMIT");
+      return receiptId;
+    }
+    const previous = update ? getReceipt(db, receiptId) : null;
+    if (update && (!previous || previous.deletedAt || previous.revision !== update.expectedRevision)) {
+      throw new ReceiptConflictError("Der Beleg wurde geändert oder gelöscht. Bitte öffne ihn erneut; deine Änderungen bleiben erhalten.");
+    }
     let merchantId: string | null = null;
     if (draft.merchantName) {
       const normalized = normalizedMerchant(draft.merchantName);
@@ -90,7 +123,17 @@ export function saveReceipt(db: ReceiptDatabase, request: SaveReceiptRequest): s
       receipt_number, transaction_id, purchased_date, purchased_time, timezone, currency,
       subtotal_minor, discount_total_minor, tax_total_minor, total_minor, item_count, position_count,
       status, validation_state, scanned_at, confirmed_at, notes, schema_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      merchant_id = excluded.merchant_id, merchant_name_snapshot = excluded.merchant_name_snapshot,
+      store_name_snapshot = excluded.store_name_snapshot, address_text = excluded.address_text,
+      receipt_number = excluded.receipt_number, transaction_id = excluded.transaction_id,
+      purchased_date = excluded.purchased_date, purchased_time = excluded.purchased_time,
+      timezone = excluded.timezone, currency = excluded.currency, subtotal_minor = excluded.subtotal_minor,
+      discount_total_minor = excluded.discount_total_minor, tax_total_minor = excluded.tax_total_minor,
+      total_minor = excluded.total_minor, item_count = excluded.item_count, position_count = excluded.position_count,
+      status = excluded.status, validation_state = excluded.validation_state, confirmed_at = excluded.confirmed_at,
+      notes = excluded.notes, schema_version = excluded.schema_version, revision = receipts.revision + 1`)
       .run(
         receiptId,
         request.clientMutationId,
@@ -113,10 +156,16 @@ export function saveReceipt(db: ReceiptDatabase, request: SaveReceiptRequest): s
         request.status,
         validationState(draft),
         createdAt,
-        request.status === "confirmed" ? createdAt : null,
+        request.status === "confirmed" ? previous?.confirmedAt ?? createdAt : null,
         draft.notes,
         draft.schemaVersion
       );
+
+    if (update) {
+      db.prepare("DELETE FROM adjustments WHERE receipt_id = ?").run(receiptId);
+      db.prepare("DELETE FROM receipt_items WHERE receipt_id = ?").run(receiptId);
+      db.prepare("DELETE FROM payments WHERE receipt_id = ?").run(receiptId);
+    }
 
     const itemStatement = db.prepare(`INSERT INTO receipt_items (
       id, receipt_id, line_number, raw_name, normalized_name, description, brand, sku, plu,
@@ -181,7 +230,7 @@ export function saveReceipt(db: ReceiptDatabase, request: SaveReceiptRequest): s
         );
     }
 
-    if (request.attachment) {
+    if (request.attachment && !update) {
       db.prepare(`INSERT INTO attachments
         (id, receipt_id, file_type, storage_provider, storage_reference, original_name, mime_type, sha256, created_at)
         VALUES (?, ?, 'receipt_image', 'local', ?, ?, ?, ?, ?)`)
@@ -209,8 +258,11 @@ export function saveReceipt(db: ReceiptDatabase, request: SaveReceiptRequest): s
 
     db.prepare(`INSERT INTO audit_events
       (id, receipt_id, entity_type, entity_id, field_path, old_value, new_value, source, changed_at)
-      VALUES (?, ?, 'receipt', ?, '$', NULL, ?, 'user', ?)`)
-      .run(crypto.randomUUID(), receiptId, receiptId, JSON.stringify(draft), createdAt);
+      VALUES (?, ?, 'receipt', ?, '$', ?, ?, 'user', ?)`)
+      .run(crypto.randomUUID(), receiptId, receiptId, previous ? JSON.stringify(previous.draft) : null, JSON.stringify(draft), createdAt);
+
+    if (update) db.prepare("INSERT INTO receipt_mutations(id, receipt_id, action, created_at) VALUES (?, ?, 'update', ?)")
+      .run(request.clientMutationId, receiptId, createdAt);
 
     db.exec("COMMIT");
     return receiptId;
@@ -220,9 +272,38 @@ export function saveReceipt(db: ReceiptDatabase, request: SaveReceiptRequest): s
   }
 }
 
+export function changeReceiptDeleted(db: ReceiptDatabase, id: string, input: ReceiptMutationRequest, deleted: boolean): string {
+  const request = receiptMutationSchema.parse(input);
+  const action = deleted ? "delete" : "restore";
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (mutationAlreadyApplied(db, id, request.clientMutationId, action)) {
+      db.exec("COMMIT");
+      return id;
+    }
+    const previous = getReceipt(db, id);
+    if (!previous || previous.revision !== request.expectedRevision || Boolean(previous.deletedAt) === deleted) {
+      throw new ReceiptConflictError("Der Beleg wurde zwischenzeitlich geändert. Bitte öffne ihn erneut.");
+    }
+    const timestamp = now();
+    const deletedAt = deleted ? timestamp : null;
+    db.prepare("UPDATE receipts SET deleted_at = ?, revision = revision + 1 WHERE id = ?").run(deletedAt, id);
+    db.prepare("INSERT INTO receipt_mutations(id, receipt_id, action, created_at) VALUES (?, ?, ?, ?)")
+      .run(request.clientMutationId, id, action, timestamp);
+    db.prepare(`INSERT INTO audit_events (id, receipt_id, entity_type, entity_id, field_path, old_value, new_value, source, changed_at)
+      VALUES (?, ?, 'receipt', ?, 'deletedAt', ?, ?, 'user', ?)`)
+      .run(crypto.randomUUID(), id, id, JSON.stringify(previous.deletedAt), JSON.stringify(deletedAt), timestamp);
+    db.exec("COMMIT");
+    return id;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 type Row = Record<string, unknown>;
 
-function mapStoredDraft(receipt: Row, items: Row[], adjustments: Row[], payment: Row | undefined): ReceiptDraft {
+function mapStoredDraft(receipt: Row, items: Row[], adjustments: Row[], payment: Row | undefined, savedDraft?: ReceiptDraft): ReceiptDraft {
   return receiptDraftSchema.parse({
     schemaVersion: receipt.schema_version,
     merchantName: receipt.merchant_name_snapshot,
@@ -274,8 +355,8 @@ function mapStoredDraft(receipt: Row, items: Row[], adjustments: Row[], payment:
       amountMinor: adjustment.amount_minor,
       sourceLine: adjustment.source_line
     })),
-    fieldSources: {},
-    uncertaintyFields: []
+    fieldSources: savedDraft?.fieldSources ?? {},
+    uncertaintyFields: savedDraft?.uncertaintyFields ?? []
   });
 }
 
@@ -287,14 +368,24 @@ export function getReceipt(db: ReceiptDatabase, id: string) {
   const payment = db.prepare("SELECT * FROM payments WHERE receipt_id = ? LIMIT 1").get(id) as Row | undefined;
   const attachment = db.prepare("SELECT * FROM attachments WHERE receipt_id = ? ORDER BY created_at LIMIT 1").get(id) as Row | undefined;
   const extractions = db.prepare("SELECT * FROM extractions WHERE receipt_id = ? ORDER BY extracted_at").all(id) as Row[];
-  const auditEvents = db.prepare("SELECT * FROM audit_events WHERE receipt_id = ? ORDER BY changed_at").all(id) as Row[];
-  const draft = mapStoredDraft(receipt, items, adjustments, payment);
+  const auditEvents = db.prepare("SELECT * FROM audit_events WHERE receipt_id = ? ORDER BY changed_at, rowid").all(id) as Row[];
+  let savedDraft: ReceiptDraft | undefined;
+  const snapshot = [...auditEvents].reverse().find((event) => event.field_path === "$" && event.entity_type === "receipt");
+  if (snapshot?.new_value) {
+    try {
+      const parsed = receiptDraftSchema.safeParse(JSON.parse(String(snapshot.new_value)));
+      if (parsed.success) savedDraft = parsed.data;
+    } catch { /* Older audit data may not contain a complete draft. */ }
+  }
+  const draft = mapStoredDraft(receipt, items, adjustments, payment, savedDraft);
   return {
     id,
+    revision: Number(receipt.revision),
+    deletedAt: receipt.deleted_at as string | null,
     status: receipt.status,
     validationState: receipt.validation_state,
     scannedAt: receipt.scanned_at,
-    confirmedAt: receipt.confirmed_at,
+    confirmedAt: receipt.confirmed_at as string | null,
     draft,
     calculations: calculateReceipt(draft),
     attachment: attachment
@@ -330,20 +421,20 @@ export function getReceipt(db: ReceiptDatabase, id: string) {
   };
 }
 
-export function listReceipts(db: ReceiptDatabase, search = "") {
+export function listReceipts(db: ReceiptDatabase, search = "", trash = false) {
   const pattern = `%${search.trim()}%`;
   const rows = db.prepare(`SELECT DISTINCT r.id, r.merchant_name_snapshot, r.purchased_date, r.purchased_time, r.scanned_at,
       r.total_minor, r.currency, r.position_count, r.status, r.validation_state
     FROM receipts r
     LEFT JOIN receipt_items i ON i.receipt_id = r.id
-    WHERE (? = '' OR r.merchant_name_snapshot LIKE ? OR i.normalized_name LIKE ? OR i.category_snapshot LIKE ?)
+    WHERE (r.deleted_at IS NOT NULL) = ? AND (? = '' OR r.merchant_name_snapshot LIKE ? OR i.normalized_name LIKE ? OR i.category_snapshot LIKE ?)
     ORDER BY COALESCE(r.purchased_date, substr(r.scanned_at, 1, 10)) DESC,
       CASE
         WHEN r.purchased_date IS NOT NULL THEN COALESCE(r.purchased_time, '00:00:00')
         ELSE substr(r.scanned_at, 12, 8)
       END DESC,
       r.scanned_at DESC`)
-    .all(search.trim(), pattern, pattern, pattern) as Row[];
+    .all(trash ? 1 : 0, search.trim(), pattern, pattern, pattern) as Row[];
   return rows.map((row) => ({
     id: row.id,
     merchantName: row.merchant_name_snapshot,

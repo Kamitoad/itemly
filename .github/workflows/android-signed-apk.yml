@@ -1,0 +1,79 @@
+name: Android installable update APK
+
+# Explicit opt-in only. Never expose signing credentials to PR workflows or
+# pull_request_target, and never fall back to a runner-generated debug key.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: itemly-durable-android
+  cancel-in-progress: false
+
+jobs:
+  build-update:
+    if: github.repository == 'Kamitoad/itemly' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out explicitly selected trusted branch
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check application and tests
+        run: pnpm check
+      - name: Build and sync Android assets
+        run: pnpm android:sync
+      - name: Build with durable preview identity
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ITEMLY_ANDROID_KEYSTORE_BASE64 }}
+          ITEMLY_SIGNING_PASSWORD: ${{ secrets.ITEMLY_ANDROID_KEYSTORE_PASSWORD }}
+          ITEMLY_SIGNING_KEY_PASSWORD: ${{ secrets.ITEMLY_ANDROID_KEYSTORE_PASSWORD }}
+          ITEMLY_SIGNING_ALIAS: itemly-preview
+          ITEMLY_SIGNING_STORE: ${{ runner.temp }}/itemly-preview.p12
+          ORG_GRADLE_PROJECT_itemlyPreview: 'true'
+          ORG_GRADLE_PROJECT_itemlyDurableSigning: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64" && test -n "$ITEMLY_SIGNING_PASSWORD" || { echo 'Configure the two ITEMLY_ANDROID signing secrets first.'; exit 1; }
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$ITEMLY_SIGNING_STORE"
+          unset KEYSTORE_BASE64
+          export ORG_GRADLE_PROJECT_itemlyVersionCode="$(( $(date -u +%s) - 1704067200 ))"
+          export ORG_GRADLE_PROJECT_itemlyVersionName="0.1.$ORG_GRADLE_PROJECT_itemlyVersionCode"
+          bash ./gradlew --no-daemon :app:assembleDebug
+          mkdir -p ../update-apk
+          cp app/build/outputs/apk/debug/app-debug.apk "../update-apk/itemly-update-${ORG_GRADLE_PROJECT_itemlyVersionCode}.apk"
+          printf 'App ID: com.kamitoad.itemly.preview\nVersion code: %s\nCommit: %s\n' "$ORG_GRADLE_PROJECT_itemlyVersionCode" "$GITHUB_SHA" > ../update-apk/build-info.txt
+          keytool -exportcert -keystore "$ITEMLY_SIGNING_STORE" -storetype PKCS12 -storepass:env ITEMLY_SIGNING_PASSWORD -alias "$ITEMLY_SIGNING_ALIAS" | sha256sum >> ../update-apk/build-info.txt
+      - name: Remove temporary signing material
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/itemly-preview.p12"
+      - name: Upload installable update
+        uses: actions/upload-artifact@v7
+        with:
+          name: itemly-installable-update-${{ github.run_id }}
+          path: update-apk/*
+          if-no-files-found: error
+          retention-days: 30

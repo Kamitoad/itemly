@@ -10,15 +10,24 @@ import {
   type ReceiptItem
 } from "../shared/receipt";
 import { chatGptReceiptPrompt } from "../shared/receipt-import";
+import { replaceReceiptItems } from "../shared/receipt-edit";
 import { copyText } from "./clipboard";
+import BackupPanel from "./BackupPanel";
+import { Capacitor } from "@capacitor/core";
 import { groupHistoryEntries } from "./history";
+import { selectNativeImage } from "./native/image-picker";
+import { applyCurrencyPreference, confirmCurrency, isKnownCurrency, needsCurrencyReview, UNKNOWN_CURRENCY } from "../shared/currency";
+import { currencyToRemember, readLastCurrency, writeLastCurrency } from "./currency-preference";
 import {
   extractReceipt,
   importChatGptReceipt,
   loadConfig,
   loadHistory,
   loadReceipt,
+  prepareReceiptImage,
   saveReceipt,
+  updateReceipt,
+  changeReceiptDeleted,
   type AppConfig,
   type HistoryEntry,
   type StoredReceipt
@@ -29,10 +38,14 @@ type Notice = { tone: "success" | "warning" | "error"; message: string } | null;
 type Theme = "light" | "dark";
 
 export default function App() {
+  const [lastCurrency, setLastCurrency] = useState<string | null>(readLastCurrency);
   const [theme, setTheme] = useState<Theme>(() => document.documentElement.dataset.theme === "dark" ? "dark" : "light");
   const [screen, setScreen] = useState<Screen>("history");
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [selectingImage, setSelectingImage] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const fileSelectionId = useRef(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [draft, setDraft] = useState<ReceiptDraft>(() => createEmptyDraft());
   const [attachment, setAttachment] = useState<AttachmentToken | null>(null);
@@ -41,10 +54,27 @@ export default function App() {
   const [notice, setNotice] = useState<Notice>(null);
   const [saving, setSaving] = useState(false);
   const [selectedReceipt, setSelectedReceipt] = useState<StoredReceipt | null>(null);
+  const [editingReceipt, setEditingReceipt] = useState<{ id: string; revision: number } | null>(null);
+  const receiptActionId = useRef(createUuid());
+  const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
 
   useEffect(() => {
     loadConfig().then(setConfig).catch((error: Error) => setNotice({ tone: "error", message: error.message }));
   }, []);
+
+  useEffect(() => {
+    if (lastCurrency) return;
+    let active = true;
+    loadHistory().then(({ receipts }) => {
+      const latest = receipts.filter((entry) => entry.status === "confirmed" && isKnownCurrency(entry.currency))
+        .sort((a, b) => b.scannedAt.localeCompare(a.scannedAt))[0];
+      if (active && latest) {
+        setLastCurrency(latest.currency);
+        writeLastCurrency(latest.currency);
+      }
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [lastCurrency]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -63,8 +93,13 @@ export default function App() {
   }
 
   function resetCapture() {
+    setEditingReceipt(null);
+    setFocusedItemId(null);
+    fileSelectionId.current += 1;
     if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
     setFile(null);
+    setSelectingImage(false);
+    setImageError(null);
     setPreviewUrl(null);
     setDraft(createEmptyDraft());
     setAttachment(null);
@@ -74,16 +109,46 @@ export default function App() {
     navigate("capture");
   }
 
-  function chooseFile(selected: File | null) {
+  async function chooseFile(selected: File | null) {
     if (!selected) return;
     if (!selected.type.startsWith("image/")) {
-      setNotice({ tone: "error", message: "Bitte wähle eine Bilddatei aus." });
+      setImageError("Bitte wähle eine Bilddatei aus.");
       return;
     }
-    if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
-    setFile(selected);
-    setPreviewUrl(URL.createObjectURL(selected));
-    setNotice(null);
+    const selectionId = ++fileSelectionId.current;
+    setSelectingImage(true);
+    setImageError(null);
+    try {
+      const prepared = await prepareReceiptImage(selected);
+      const nextPreview = prepared?.imageUrl ?? URL.createObjectURL(selected);
+      if (selectionId !== fileSelectionId.current) {
+        URL.revokeObjectURL(nextPreview);
+        return;
+      }
+      setFile(selected);
+      setPreviewUrl(nextPreview);
+      setNotice(null);
+    } catch (error) {
+      if (selectionId !== fileSelectionId.current) return;
+      setFile(null);
+      setPreviewUrl(null);
+      setImageError(error instanceof Error ? error.message : "Das Bonbild konnte nicht gelesen werden. Der JSON-Import ist ohne Bild möglich.");
+    } finally {
+      if (selectionId === fileSelectionId.current) setSelectingImage(false);
+    }
+  }
+
+  async function pickNativeImage(source: "camera" | "gallery") {
+    setSelectingImage(true);
+    setImageError(null);
+    try {
+      const selected = await selectNativeImage(source);
+      if (selected) await chooseFile(selected);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Das Bonbild konnte nicht ausgewählt werden.");
+    } finally {
+      setSelectingImage(false);
+    }
   }
 
   async function analyze() {
@@ -91,7 +156,7 @@ export default function App() {
     navigate("extracting");
     try {
       const result = await extractReceipt(file);
-      setDraft(result.draft);
+      setDraft(applyCurrencyPreference(result.draft, lastCurrency));
       setAttachment(result.attachment);
       setExtractionId(result.extraction.id);
       setPreviewUrl(result.attachment?.imageUrl ?? previewUrl);
@@ -113,7 +178,7 @@ export default function App() {
 
   async function importFromChatGpt(content: string) {
     const result = await importChatGptReceipt(content, file);
-    setDraft(result.draft);
+    setDraft(applyCurrencyPreference(result.draft, lastCurrency));
     setAttachment(result.attachment);
     setExtractionId(result.extraction.id);
     setPreviewUrl(result.attachment?.imageUrl ?? previewUrl);
@@ -129,7 +194,7 @@ export default function App() {
   }
 
   function startManual() {
-    setDraft(createEmptyDraft());
+    setDraft(applyCurrencyPreference(createEmptyDraft(), lastCurrency));
     setAttachment(null);
     setExtractionId(null);
     setNotice({ tone: "warning", message: "Manuelle Erfassung: Unbekannte Angaben können leer bleiben." });
@@ -140,9 +205,18 @@ export default function App() {
     setSaving(true);
     setNotice(null);
     try {
-      const result = await saveReceipt({ clientMutationId, status, draft, attachment, extractionId });
+      const result = editingReceipt
+        ? await updateReceipt(editingReceipt.id, { clientMutationId, expectedRevision: editingReceipt.revision, status, draft })
+        : await saveReceipt({ clientMutationId, status, draft, attachment, extractionId });
+      const rememberedCurrency = currencyToRemember(draft);
+      if (rememberedCurrency) {
+        setLastCurrency(rememberedCurrency);
+        writeLastCurrency(rememberedCurrency);
+      }
       setSelectedReceipt(result.receipt);
-      setNotice({ tone: "success", message: status === "confirmed" ? "Einkauf wurde sicher gespeichert." : "Entwurf wurde gespeichert." });
+      setEditingReceipt(null);
+      receiptActionId.current = createUuid();
+      setNotice({ tone: "success", message: editingReceipt ? "Änderungen wurden gespeichert." : status === "confirmed" ? "Einkauf wurde sicher gespeichert." : "Entwurf wurde gespeichert." });
       navigateKeepingNotice("detail");
     } catch (error) {
       setNotice({ tone: "error", message: error instanceof Error ? error.message : "Speichern fehlgeschlagen. Dein Entwurf bleibt erhalten." });
@@ -155,10 +229,46 @@ export default function App() {
     try {
       const result = await loadReceipt(id);
       setSelectedReceipt(result.receipt);
+      receiptActionId.current = createUuid();
       navigate("detail");
     } catch (error) {
       setNotice({ tone: "error", message: error instanceof Error ? error.message : "Einkauf konnte nicht geladen werden." });
     }
+  }
+
+  function editReceipt(itemId: string | null = null) {
+    if (!selectedReceipt || selectedReceipt.deletedAt) return;
+    setDraft(structuredClone(selectedReceipt.draft));
+    setAttachment(selectedReceipt.attachment);
+    setPreviewUrl(selectedReceipt.attachment?.imageUrl ?? null);
+    setExtractionId(null);
+    setFile(null);
+    setClientMutationId(createUuid());
+    setEditingReceipt({ id: selectedReceipt.id, revision: selectedReceipt.revision });
+    setFocusedItemId(itemId);
+    navigate("review");
+  }
+
+  function cancelEdit() {
+    if (!window.confirm("Bearbeitung abbrechen? Nicht gespeicherte Änderungen werden verworfen.")) return;
+    setEditingReceipt(null);
+    navigate("detail");
+  }
+
+  async function toggleDeleted(deleted: boolean) {
+    if (!selectedReceipt) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      const result = await changeReceiptDeleted(selectedReceipt.id, {
+        clientMutationId: receiptActionId.current, expectedRevision: selectedReceipt.revision
+      }, deleted);
+      receiptActionId.current = createUuid();
+      setSelectedReceipt(result.receipt);
+      setNotice({ tone: "success", message: deleted ? "Beleg im Papierkorb. Du kannst ihn wiederherstellen." : "Beleg wurde wiederhergestellt." });
+    } catch (error) {
+      setNotice({ tone: "error", message: error instanceof Error ? error.message : "Die Änderung konnte nicht gespeichert werden." });
+    } finally { setSaving(false); }
   }
 
   const activeStep = screen === "capture" || screen === "json-import" || screen === "extracting" ? 0 : screen === "review" ? 1 : 2;
@@ -166,7 +276,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <button className="brand" onClick={() => navigate("history")} aria-label="Zur Übersicht">
+        <button className="brand" onClick={() => editingReceipt ? cancelEdit() : navigate("history")} aria-label="Zur Übersicht" disabled={saving}>
           <span className="brand-mark"><ReceiptIcon /></span>
           <span><strong>Itemly</strong><small>Deine Einkäufe, klar erfasst.</small></span>
         </button>
@@ -181,7 +291,7 @@ export default function App() {
             <span className="theme-toggle-track"><span>{theme === "dark" ? <MoonIcon /> : <SunIcon />}</span></span>
             <small>{theme === "dark" ? "Dunkel" : "Hell"}</small>
           </button>
-          {screen !== "history" && <button className="history-link" onClick={() => navigate("history")}><HistoryIcon /> Einkäufe</button>}
+          {screen !== "history" && <button className="history-link" disabled={saving} onClick={() => editingReceipt ? cancelEdit() : navigate("history")}><HistoryIcon /> Einkäufe</button>}
         </div>
       </header>
 
@@ -192,8 +302,12 @@ export default function App() {
           <CaptureScreen
             file={file}
             previewUrl={previewUrl}
+            selectingImage={selectingImage}
+            imageError={imageError}
             config={config}
             onChoose={chooseFile}
+            onPickNative={pickNativeImage}
+            nativePlatform={Capacitor.isNativePlatform()}
             onAnalyze={analyze}
             onJsonImport={() => navigate("json-import")}
             onManual={startManual}
@@ -203,7 +317,11 @@ export default function App() {
           <JsonImportScreen
             file={file}
             previewUrl={previewUrl}
+            selectingImage={selectingImage}
+            imageError={imageError}
             onChoose={chooseFile}
+            onPickNative={pickNativeImage}
+            nativePlatform={Capacitor.isNativePlatform()}
             onBack={() => navigate("capture")}
             onImport={importFromChatGpt}
           />
@@ -211,12 +329,16 @@ export default function App() {
         {screen === "extracting" && <ExtractingScreen previewUrl={previewUrl} />}
         {screen === "review" && (
           <ReviewScreen
+            key={`${editingReceipt?.id ?? "new"}:${focusedItemId ?? "first"}`}
             draft={draft}
             imageUrl={previewUrl}
-            onChange={setDraft}
+            onChange={(next) => { if (!saving) { setDraft(next); setClientMutationId(createUuid()); } }}
             onNext={() => navigate("save")}
             onSaveDraft={() => persist("draft")}
             saving={saving}
+            editing={Boolean(editingReceipt)}
+            onCancel={cancelEdit}
+            focusedItemId={focusedItemId}
           />
         )}
         {screen === "save" && (
@@ -226,11 +348,12 @@ export default function App() {
             onBack={() => navigate("review")}
             onSave={persist}
             saving={saving}
+            editing={Boolean(editingReceipt)}
           />
         )}
         {screen === "history" && <HistoryScreen onOpen={openReceipt} onNew={resetCapture} />}
         {screen === "detail" && selectedReceipt && (
-          <DetailScreen receipt={selectedReceipt} onBack={() => navigate("history")} onNew={resetCapture} />
+          <DetailScreen key={selectedReceipt.id} receipt={selectedReceipt} onBack={() => navigate("history")} onNew={resetCapture} onEdit={editReceipt} onDelete={() => toggleDeleted(true)} onRestore={() => toggleDeleted(false)} saving={saving} />
         )}
       </main>
     </div>
@@ -263,16 +386,24 @@ function NoticeBanner({ notice, onClose }: { notice: Exclude<Notice, null>; onCl
 function CaptureScreen({
   file,
   previewUrl,
+  selectingImage,
+  imageError,
   config,
   onChoose,
+  onPickNative,
+  nativePlatform,
   onAnalyze,
   onJsonImport,
   onManual
 }: {
   file: File | null;
   previewUrl: string | null;
+  selectingImage: boolean;
+  imageError: string | null;
   config: AppConfig | null;
   onChoose: (file: File | null) => void;
+  onPickNative: (source: "camera" | "gallery") => void;
+  nativePlatform: boolean;
   onAnalyze: () => void;
   onJsonImport: () => void;
   onManual: () => void;
@@ -285,13 +416,15 @@ function CaptureScreen({
       <h1>Neuen Bon erfassen</h1>
       <p className="lead">Fotografiere deinen Kassenbon. Du kontrollierst jeden erkannten Wert, bevor etwas gespeichert wird.</p>
 
-      <input ref={cameraRef} className="visually-hidden" type="file" accept="image/*" capture="environment" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
-      <input ref={galleryRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+      {!nativePlatform && <>
+        <input ref={cameraRef} className="visually-hidden" type="file" accept="image/*" capture="environment" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+        <input ref={galleryRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+      </>}
 
       {previewUrl ? (
         <div className="capture-preview">
           <img src={previewUrl} alt="Vorschau des ausgewählten Kassenbons" />
-          <div className="preview-meta"><CheckIcon /><span><strong>{file?.name}</strong><small>Bereit zur Analyse</small></span></div>
+          <div className="preview-meta"><CheckIcon /><span><strong>{file?.name}</strong><small>{config?.extractionMode === "manual" ? "Bereit zur Erfassung" : "Bereit zur Analyse"}</small></span></div>
         </div>
       ) : (
         <div className="scan-illustration" aria-hidden="true">
@@ -300,29 +433,35 @@ function CaptureScreen({
       )}
 
       <div className="capture-actions">
-        <button className="button primary large" onClick={() => cameraRef.current?.click()}><CameraIcon /> Foto aufnehmen</button>
-        <button className="button secondary large" onClick={() => galleryRef.current?.click()}><ImageIcon /> Bild aus Galerie wählen</button>
+        <button className="button primary large" disabled={selectingImage} onClick={() => nativePlatform ? onPickNative("camera") : cameraRef.current?.click()}><CameraIcon /> Foto aufnehmen</button>
+        <button className="button secondary large" disabled={selectingImage} onClick={() => nativePlatform ? onPickNative("gallery") : galleryRef.current?.click()}><ImageIcon /> Bild aus Galerie wählen</button>
       </div>
+      {selectingImage && <p role="status">Bonbild wird lokal übernommen …</p>}
+      {imageError && <div className="import-error" role="alert"><AlertIcon /><span>{imageError}</span></div>}
 
       {previewUrl && (
         <div className="consent-card">
           <div><ShieldIcon /></div>
-          <p><strong>Vor dem Analysieren</strong><span>{config?.disclosure ?? "Konfiguration wird geladen …"}</span></p>
-          <button className="button primary" onClick={onAnalyze}>Bon jetzt analysieren <ArrowIcon /></button>
+          <p><strong>{config?.extractionMode === "manual" ? "Vor dem Erfassen" : "Vor dem Analysieren"}</strong><span>{config?.disclosure ?? "Konfiguration wird geladen …"}</span></p>
+          <button className="button primary" disabled={selectingImage} onClick={onAnalyze}>{config?.extractionMode === "manual" ? "Bild übernehmen" : "Bon jetzt analysieren"} <ArrowIcon /></button>
         </div>
       )}
 
-      <button className="button chatgpt-import-button" onClick={onJsonImport}><CodeIcon /> ChatGPT-JSON importieren</button>
+      <button className="button chatgpt-import-button" disabled={selectingImage} onClick={onJsonImport}><CodeIcon /> ChatGPT-JSON importieren</button>
       <button className="text-button" onClick={onManual}>Ohne Bild manuell erfassen</button>
       <p className="privacy-note"><LockIcon /> Erst nach „Bon jetzt analysieren“ wird ein Bild verarbeitet.</p>
     </section>
   );
 }
 
-function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
+function JsonImportScreen({ file, previewUrl, selectingImage, imageError, onChoose, onPickNative, nativePlatform, onBack, onImport }: {
   file: File | null;
   previewUrl: string | null;
+  selectingImage: boolean;
+  imageError: string | null;
   onChoose: (file: File | null) => void;
+  onPickNative: (source: "camera" | "gallery") => void;
+  nativePlatform: boolean;
   onBack: () => void;
   onImport: (content: string) => Promise<void>;
 }) {
@@ -362,7 +501,7 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
 
   return (
     <section className="page narrow json-import-page">
-      <button className="text-button back" onClick={onBack}>← Zurück</button>
+      <button className="text-button back" disabled={selectingImage} onClick={onBack}>← Zurück</button>
       <div className="eyebrow">Ohne API-Schlüssel</div>
       <h1>ChatGPT-JSON importieren</h1>
       <p className="lead">Lass deinen Bon in einem normalen ChatGPT-Chat auslesen und füge das Ergebnis hier ein. Itemly prüft die Struktur, bevor du jeden Wert kontrollierst.</p>
@@ -385,9 +524,10 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
 
       <section className="import-step-card">
         <div className="import-step-heading"><span>2</span><div><h2>Originalbon lokal ablegen</h2><p>Optional, aber empfohlen. Das Bild wird von Itemly nicht an ChatGPT gesendet.</p></div></div>
-        <input ref={imageRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />
+        {!nativePlatform && <input ref={imageRef} className="visually-hidden" type="file" accept="image/*" onChange={(event) => onChoose(event.target.files?.[0] ?? null)} />}
         {previewUrl && <div className="import-image-preview"><img src={previewUrl} alt="Vorschau des Originalbons" /><span>{file?.name ?? "Originalbon ausgewählt"}</span></div>}
-        <button className="button ghost" onClick={() => imageRef.current?.click()}><ImageIcon /> {file ? "Anderes Bild wählen" : "Bonbild auswählen"}</button>
+        <button className="button ghost" disabled={selectingImage} onClick={() => nativePlatform ? onPickNative("gallery") : imageRef.current?.click()}><ImageIcon /> {selectingImage ? "Bonbild wird übernommen …" : file ? "Anderes Bild wählen" : "Bonbild auswählen"}</button>
+        {imageError && <div className="import-error" role="alert"><AlertIcon /><span>{imageError} Du kannst das JSON auch ohne Bild importieren.</span></div>}
       </section>
 
       <section className="import-step-card">
@@ -403,7 +543,7 @@ function JsonImportScreen({ file, previewUrl, onChoose, onBack, onImport }: {
           />
         </label>
         {error && <div className="import-error" role="alert"><AlertIcon /><span>{error}</span></div>}
-        <button className="button primary large" disabled={submitting || content.trim().length === 0} onClick={submit}>
+        <button className="button primary large" disabled={submitting || selectingImage || content.trim().length === 0} onClick={submit}>
           {submitting ? "JSON wird geprüft …" : "JSON prüfen und übernehmen"} {!submitting && <ArrowIcon />}
         </button>
       </section>
@@ -434,7 +574,10 @@ function ReviewScreen({
   onChange,
   onNext,
   onSaveDraft,
-  saving
+  saving,
+  editing,
+  onCancel,
+  focusedItemId
 }: {
   draft: ReceiptDraft;
   imageUrl: string | null;
@@ -442,14 +585,21 @@ function ReviewScreen({
   onNext: () => void;
   onSaveDraft: () => void;
   saving: boolean;
+  editing: boolean;
+  onCancel: () => void;
+  focusedItemId: string | null;
 }) {
   const [showImage, setShowImage] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(draft.items[0]?.id ?? null);
-  const [removed, setRemoved] = useState<{ item: ReceiptItem; index: number } | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(focusedItemId ?? draft.items[0]?.id ?? null);
+  const [removed, setRemoved] = useState<{ item: ReceiptItem; index: number; snapshot: ReceiptDraft } | null>(null);
   const calculations = useMemo(() => calculateReceipt(draft), [draft]);
 
   function field<K extends keyof ReceiptDraft>(key: K, value: ReceiptDraft[K]) {
-    onChange({ ...draft, [key]: value, fieldSources: { ...draft.fieldSources, [key]: "user_entered" } });
+    if (key === "currency") {
+      onChange(confirmCurrency(draft, value as string));
+    } else {
+      onChange({ ...draft, [key]: value, fieldSources: { ...draft.fieldSources, [key]: "user_entered" } });
+    }
   }
 
   function updateItem(id: string, item: ReceiptItem) {
@@ -459,8 +609,8 @@ function ReviewScreen({
   function removeItem(id: string) {
     const index = draft.items.findIndex((item) => item.id === id);
     if (index < 0) return;
-    setRemoved({ item: draft.items[index], index });
-    onChange({ ...draft, items: draft.items.filter((item) => item.id !== id) });
+    setRemoved({ item: draft.items[index], index, snapshot: draft });
+    onChange(replaceReceiptItems(draft, draft.items.filter((item) => item.id !== id)));
     setExpandedId(null);
   }
 
@@ -468,7 +618,7 @@ function ReviewScreen({
     if (!removed) return;
     const next = [...draft.items];
     next.splice(removed.index, 0, removed.item);
-    onChange({ ...draft, items: next });
+    onChange(replaceReceiptItems(draft, next, removed.snapshot));
     setRemoved(null);
   }
 
@@ -479,18 +629,21 @@ function ReviewScreen({
   }
 
   return (
-    <section className="page review-page">
+    <section className="page review-page" inert={saving}>
       <div className="review-heading">
-        <div><div className="eyebrow">Ergebnis kontrollieren</div><h1>Einkauf prüfen</h1></div>
+        <div><div className="eyebrow">{editing ? "Gespeicherten Beleg ändern" : "Ergebnis kontrollieren"}</div><h1>{editing ? "Beleg bearbeiten" : "Einkauf prüfen"}</h1></div>
         {imageUrl && <button className="button ghost" onClick={() => setShowImage(!showImage)}><ReceiptIcon /> {showImage ? "Bon ausblenden" : "Originalbon"}</button>}
       </div>
 
-      <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} />
+      {editing && <div className="edit-notice"><p>Du bearbeitest den bestehenden Beleg. Originalbild und ursprüngliche Auswertung bleiben erhalten.</p><button className="text-button" onClick={onCancel}>Bearbeitung abbrechen</button></div>}
+
+      <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} currencyNeedsReview={needsCurrencyReview(draft)} />
       {showImage && imageUrl && <div className="receipt-image-panel"><img src={imageUrl} alt="Originaler Kassenbon" /></div>}
 
       <section className="section-card metadata-card">
         <div className="section-title"><div className="section-icon"><StoreIcon /></div><div><h2>Bonangaben</h2><p>Tippe in ein Feld, um es zu korrigieren.</p></div></div>
         <div className="field-grid">
+          <CurrencyField draft={draft} onConfirm={(currency) => field("currency", currency)} />
           <Field label="Händler" value={draft.merchantName} placeholder="Unbekannt" onChange={(value) => field("merchantName", value)} />
           <Field label="Filiale" value={draft.storeName} placeholder="Unbekannt" onChange={(value) => field("storeName", value)} />
           <Field label="Adresse" value={draft.addressText} placeholder="Unbekannt" wide onChange={(value) => field("addressText", value)} />
@@ -498,7 +651,6 @@ function ReviewScreen({
           <Field label="Uhrzeit" type="time" value={draft.purchasedTime} placeholder="Unbekannt" onChange={(value) => field("purchasedTime", value)} />
           <Field label="Bonnummer" value={draft.receiptNumber} placeholder="Unbekannt" onChange={(value) => field("receiptNumber", value)} />
           <Field label="Transaktions-ID" value={draft.transactionId} placeholder="Unbekannt" onChange={(value) => field("transactionId", value)} />
-          <label className="field"><span>Währung</span><select value={draft.currency} onChange={(event) => field("currency", event.target.value.toUpperCase())}><option>CAD</option><option>EUR</option><option>USD</option><option>GBP</option></select></label>
         </div>
       </section>
 
@@ -609,31 +761,34 @@ function ItemCard({ item, index, currency, expanded, onToggle, onChange, onRemov
   );
 }
 
-function SaveScreen({ draft, imageUrl, onBack, onSave, saving }: {
+function SaveScreen({ draft, imageUrl, onBack, onSave, saving, editing }: {
   draft: ReceiptDraft;
   imageUrl: string | null;
   onBack: () => void;
   onSave: (status: "draft" | "confirmed") => void;
   saving: boolean;
+  editing: boolean;
 }) {
   const calculations = calculateReceipt(draft);
+  const currencyNeedsReview = needsCurrencyReview(draft);
   return (
     <section className="page narrow save-page">
       <div className="eyebrow">Letzte Kontrolle</div>
-      <h1>Einkauf speichern</h1>
-      <p className="lead">Erst nach erfolgreicher Speicherung erscheint der Einkauf im Verlauf.</p>
+      <h1>{editing ? "Änderungen speichern" : "Einkauf speichern"}</h1>
+      <p className="lead">{editing ? "Der vorhandene Beleg wird aktualisiert – es entsteht kein zweiter Eintrag." : "Erst nach erfolgreicher Speicherung erscheint der Einkauf im Verlauf."}</p>
       <div className="final-card">
         {imageUrl ? <img src={imageUrl} alt="Originalbon" /> : <div className="final-placeholder"><ReceiptLargeIcon /></div>}
         <div className="final-merchant"><small>{draft.purchasedDate ?? "Datum unbekannt"}</small><h2>{draft.merchantName ?? "Händler unbekannt"}</h2><p>{calculations.positionCount} Positionen · {draft.paymentMethod ?? "Zahlung unbekannt"}</p></div>
         <div className="final-total"><span>Gesamtbetrag</span><strong>{formatMoney(draft.totalMinor, draft.currency)}</strong></div>
-        <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} compact />
+        <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} currencyNeedsReview={currencyNeedsReview} compact />
       </div>
       {!calculations.isBalanced && <div className="save-warning"><AlertIcon /><p><strong>Noch nicht ausgeglichen</strong><span>Du kannst diesen Einkauf als Entwurf speichern und später ergänzen. Bestätigen ist erst bei übereinstimmenden Beträgen möglich.</span></p></div>}
+      {currencyNeedsReview && <div className="save-warning"><AlertIcon /><p><strong>Währung prüfen</strong><span>Bitte wähle oder bestätige die Währung in der Prüfansicht. Als Entwurf kannst du den Bon bereits speichern.</span></p></div>}
       <div className="save-facts"><span><DatabaseIcon /> SQLite-Datensatz</span><span><ImageIcon /> Originalbild</span><span><DownloadIcon /> Portable JSON-Exporte</span></div>
       <div className="save-buttons">
         <button className="button ghost" onClick={onBack} disabled={saving}>Zurück zur Prüfung</button>
-        {!calculations.isBalanced && <button className="button secondary" onClick={() => onSave("draft")} disabled={saving}>{saving ? "Speichert …" : "Als Entwurf speichern"}</button>}
-        <button className="button primary large" onClick={() => onSave("confirmed")} disabled={saving || !calculations.isBalanced}>{saving ? "Speichert …" : "Einkauf speichern"} {!saving && <CheckIcon />}</button>
+        {(editing || !calculations.isBalanced || currencyNeedsReview) && <button className="button secondary" onClick={() => onSave("draft")} disabled={saving}>{saving ? "Speichert …" : "Als Entwurf speichern"}</button>}
+        <button className="button primary large" onClick={() => onSave("confirmed")} disabled={saving || !calculations.isBalanced || currencyNeedsReview}>{saving ? "Speichert …" : editing ? "Änderungen speichern" : "Einkauf speichern"} {!saving && <CheckIcon />}</button>
       </div>
     </section>
   );
@@ -644,33 +799,37 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [trash, setTrash] = useState(false);
+  const [backupRevision, setBackupRevision] = useState(0);
   const groups = useMemo(() => groupHistoryEntries(entries), [entries]);
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
     const handle = window.setTimeout(() => {
-      setLoading(true);
-      loadHistory(search).then((result) => { setEntries(result.receipts); setError(null); }).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false));
+      loadHistory(search, trash).then((result) => { if (active) { setEntries(result.receipts); setError(null); } }).catch((reason: Error) => { if (active) setError(reason.message); }).finally(() => { if (active) setLoading(false); });
     }, 180);
-    return () => window.clearTimeout(handle);
-  }, [search]);
+    return () => { active = false; window.clearTimeout(handle); };
+  }, [search, trash, backupRevision]);
 
   return (
     <section className="page history-page">
       <div className="history-heading">
         <div>
           <div className="eyebrow">Übersicht</div>
-          <h1>Deine Bons</h1>
-          <p className="lead">Alle Einkäufe auf einen Blick – die neuesten stehen oben.</p>
+          <h1>{trash ? "Papierkorb" : "Deine Bons"}</h1>
+          <p className="lead">{trash ? "Gelöschte Belege bleiben erhalten und können wiederhergestellt werden." : "Alle Einkäufe auf einen Blick – die neuesten stehen oben."}</p>
         </div>
         <div className="history-summary" aria-live="polite">
           <strong>{loading ? "…" : entries.length}</strong>
           <span>{search ? "Treffer" : entries.length === 1 ? "gespeicherter Bon" : "gespeicherte Bons"}</span>
         </div>
       </div>
+      <div className="history-tabs" role="group" aria-label="Belegansicht"><button className={`button compact ${!trash ? "primary" : "secondary"}`} aria-pressed={!trash} onClick={() => setTrash(false)}>Meine Bons</button><button className={`button compact ${trash ? "primary" : "secondary"}`} aria-pressed={trash} onClick={() => setTrash(true)}>Papierkorb</button></div>
       <label className="search-box"><SearchIcon /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Händler, Produkt oder Kategorie suchen" /></label>
       {error && <div className="notice error"><AlertIcon /><p>{error}</p></div>}
       {loading ? <div className="loading-list"><span className="spinner" /> Einkäufe werden geladen …</div> : entries.length === 0 ? (
-        <div className="empty-card history-empty"><ReceiptLargeIcon /><h2>{search ? "Keine Treffer" : "Noch keine Bons"}</h2><p>{search ? "Versuche einen anderen Suchbegriff." : "Tippe unten rechts auf „Neuer Bon“, um deinen ersten Einkauf zu erfassen."}</p></div>
+        <div className="empty-card history-empty"><ReceiptLargeIcon /><h2>{search ? "Keine Treffer" : trash ? "Papierkorb ist leer" : "Noch keine Bons"}</h2><p>{search ? "Versuche einen anderen Suchbegriff." : trash ? "Gelöschte Belege findest du hier." : "Tippe unten rechts auf „Neuer Bon“, um deinen ersten Einkauf zu erfassen."}</p></div>
       ) : (
         <div className="history-groups">
           {groups.map((group) => (
@@ -692,22 +851,27 @@ function HistoryScreen({ onOpen, onNew }: { onOpen: (id: string) => void; onNew:
           ))}
         </div>
       )}
-      <a className="backup-link" href="/api/backup"><DownloadIcon /> Vollständiges Backup herunterladen</a>
+      {Capacitor.isNativePlatform() ? <BackupPanel onRestored={() => setBackupRevision((value) => value + 1)} /> : <a className="backup-link" href="/api/backup"><DownloadIcon /> Vollständiges Backup herunterladen</a>}
       <button className="receipt-fab" onClick={onNew} aria-label="Neuen Bon hinzufügen"><span aria-hidden="true">＋</span><strong>Neuer Bon</strong></button>
     </section>
   );
 }
 
-function DetailScreen({ receipt, onBack, onNew }: { receipt: StoredReceipt; onBack: () => void; onNew: () => void }) {
+function DetailScreen({ receipt, onBack, onNew, onEdit, onDelete, onRestore, saving }: { receipt: StoredReceipt; onBack: () => void; onNew: () => void; onEdit: (itemId?: string | null) => void; onDelete: () => void; onRestore: () => void; saving: boolean }) {
   const { draft, calculations } = receipt;
+  const [confirmDelete, setConfirmDelete] = useState(false);
   return (
     <section className="page detail-page">
-      <div className="detail-toolbar"><button className="text-button back" onClick={onBack}>← Zum Verlauf</button><button className="button primary compact" onClick={onNew}>＋ Neuer Bon</button></div>
+      <div className="detail-toolbar"><button className="text-button back" onClick={onBack} disabled={saving}>← Zum Verlauf</button><button className="button primary compact" onClick={onNew} disabled={saving}>＋ Neuer Bon</button></div>
+      <div className="detail-actions">
+        {receipt.deletedAt ? <><p>Dieser Beleg liegt im Papierkorb.</p><button className="button primary" disabled={saving} onClick={onRestore}>Beleg wiederherstellen</button></> : <><button className="button secondary" disabled={saving} onClick={() => onEdit()}>Beleg bearbeiten</button><button className="button danger" disabled={saving} onClick={() => setConfirmDelete(true)}>Beleg löschen</button></>}
+      </div>
+      {confirmDelete && !receipt.deletedAt && <div className="delete-confirmation" role="alertdialog" aria-modal="false" aria-labelledby="delete-receipt-title"><h2 id="delete-receipt-title">Beleg in den Papierkorb verschieben?</h2><p>Der Beleg mit allen Artikeln und dem Originalbild bleibt wiederherstellbar.</p><div><button className="button secondary" disabled={saving} onClick={() => setConfirmDelete(false)}>Abbrechen</button><button className="button danger" disabled={saving} onClick={() => { setConfirmDelete(false); onDelete(); }}>In Papierkorb verschieben</button></div></div>}
       <div className="detail-hero">
         <div><div className="eyebrow">Gespeicherter Einkauf</div><h1>{draft.merchantName ?? "Händler unbekannt"}</h1><p>{draft.purchasedDate ?? "Datum unbekannt"}{draft.purchasedTime ? ` · ${draft.purchasedTime}` : ""}</p></div>
         <div className="detail-amount"><span>Gesamt</span><strong>{formatMoney(draft.totalMinor, draft.currency)}</strong></div>
       </div>
-      <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} />
+      <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} currencyNeedsReview={needsCurrencyReview(draft)} />
       <div className="detail-grid">
         {receipt.attachment && <div className="detail-image"><img src={receipt.attachment.imageUrl} alt="Gespeicherter Originalbon" /></div>}
         <div className="detail-facts section-card">
@@ -723,11 +887,11 @@ function DetailScreen({ receipt, onBack, onNew }: { receipt: StoredReceipt; onBa
         </div>
       </div>
       <section className="detail-items"><div className="items-header"><div><h2>Artikel</h2><p>{calculations.positionCount} Positionen</p></div></div>
-        <div className="saved-items">{draft.items.filter((item) => !item.excluded).map((item, index) => <div className="saved-item" key={item.id}><span>{String(index + 1).padStart(2, "0")}</span><p><strong>{item.normalizedName || item.rawName || "Unbenannter Artikel"}</strong><small>{item.quantity ? `${item.quantity} ${item.quantityUnit ?? ""}` : "Menge unbekannt"}{item.category ? ` · ${item.category}` : ""}</small></p><b>{formatMoney(item.lineTotalMinor, draft.currency)}</b></div>)}</div>
+        <div className="saved-items">{draft.items.filter((item) => !item.excluded).map((item, index) => <div className="saved-item" key={item.id}><span>{String(index + 1).padStart(2, "0")}</span><p><strong>{item.normalizedName || item.rawName || "Unbenannter Artikel"}</strong><small>{item.quantity ? `${item.quantity} ${item.quantityUnit ?? ""}` : "Menge unbekannt"}{item.category ? ` · ${item.category}` : ""}</small>{!receipt.deletedAt && <button className="text-button item-edit-link" disabled={saving} onClick={() => onEdit(item.id)} aria-label={`Artikel ${item.normalizedName || item.rawName || index + 1} bearbeiten`}>Bearbeiten</button>}</p><b>{formatMoney(item.lineTotalMinor, draft.currency)}</b></div>)}</div>
       </section>
       <section className="summary-card balanced detail-summary"><div className="summary-rows"><div><span>Positionen</span><strong>{formatMoney(calculations.itemsTotalMinor, draft.currency)}</strong></div><div><span>Steuern</span><strong>{formatMoney(draft.taxTotalMinor, draft.currency)}</strong></div><div className="emphasized"><span>Gesamt</span><strong>{formatMoney(draft.totalMinor, draft.currency)}</strong></div></div></section>
       {draft.notes && <section className="section-card detail-notes"><h2>Weitere Informationen</h2><p>{draft.notes}</p></section>}
-      <div className="export-actions"><a className="button secondary" href={`/api/receipts/${receipt.id}/export.json`}><CodeIcon /> JSON exportieren</a><a className="button primary" href={`/api/receipts/${receipt.id}/export.bundle.json`}><DownloadIcon /> Daten + Bonbild</a></div>
+      {Capacitor.isNativePlatform() ? <p className="backup-link">Vollständige Handy-Sicherung unter „Zum Verlauf“ → „Daten &amp; Sicherung“.</p> : <div className="export-actions"><a className="button secondary" href={`/api/receipts/${receipt.id}/export.json`}><CodeIcon /> JSON exportieren</a><a className="button primary" href={`/api/receipts/${receipt.id}/export.bundle.json`}><DownloadIcon /> Daten + Bonbild</a></div>}
     </section>
   );
 }
@@ -744,10 +908,27 @@ function Field({ label, value, onChange, placeholder, type = "text", wide = fals
   return <label className={`field ${wide ? "wide" : ""}`}><span>{label}</span><input type={type} inputMode={inputMode} value={value ?? ""} placeholder={placeholder} onChange={(event) => onChange(event.target.value || null)} /></label>;
 }
 
+function CurrencyField({ draft, onConfirm }: { draft: ReceiptDraft; onConfirm: (currency: string) => void }) {
+  const pending = needsCurrencyReview(draft);
+  const known = isKnownCurrency(draft.currency);
+  const options = [...new Set(["CAD", "EUR", "USD", "GBP", ...(known ? [draft.currency] : [])])];
+  return <div className={`field wide currency-field ${pending ? "needs-review" : ""}`}>
+    <label htmlFor="receipt-currency">Währung{pending ? " · Bitte prüfen" : ""}</label>
+    <div className="currency-controls">
+      <select id="receipt-currency" value={draft.currency} aria-describedby={pending ? "currency-hint" : undefined} aria-invalid={pending} onChange={(event) => onConfirm(event.target.value)}>
+        <option value={UNKNOWN_CURRENCY}>Bitte Währung wählen</option>
+        {options.map((currency) => <option key={currency} value={currency}>{currency}</option>)}
+      </select>
+      {pending && known && <button className="button secondary compact" onClick={() => onConfirm(draft.currency)}>{draft.currency} bestätigen</button>}
+    </div>
+    {pending && <p id="currency-hint" role="status">{known ? `Die Währung wurde nicht sicher erkannt. ${draft.currency} ist vorbelegt – bitte bestätigen oder ändern.` : "Die Währung fehlt oder wurde nicht erkannt. Bitte auswählen; dein JSON musst du dafür nicht ändern."}</p>}
+  </div>;
+}
+
 function MoneyField({ label, value, currency, onChange }: { label: string; value: number | null; currency: string; onChange: (value: number | null) => void }) {
   const [text, setText] = useState(value === null ? "" : (value / 100).toFixed(2));
   useEffect(() => setText(value === null ? "" : (value / 100).toFixed(2)), [value]);
-  return <label className="field money-field"><span>{label}</span><div><input inputMode="decimal" value={text} placeholder="0,00" onChange={(event) => { setText(event.target.value); const parsed = parseMoney(event.target.value); if (parsed !== undefined) onChange(parsed); }} /><b>{currency}</b></div></label>;
+  return <label className="field money-field"><span>{label}</span><div><input inputMode="decimal" value={text} placeholder="0,00" onChange={(event) => { setText(event.target.value); const parsed = parseMoney(event.target.value); if (parsed !== undefined) onChange(parsed); }} /><b>{currency === UNKNOWN_CURRENCY ? "—" : currency}</b></div></label>;
 }
 
 function SummaryMoney({ label, value, currency, onChange, readOnly = false, emphasized = false }: { label: string; value: number | null; currency: string; onChange?: (value: number | null) => void; readOnly?: boolean; emphasized?: boolean }) {
@@ -757,12 +938,15 @@ function SummaryMoney({ label, value, currency, onChange, readOnly = false, emph
 function MoneyInline({ value, currency, onChange }: { value: number | null; currency: string; onChange: (value: number | null) => void }) {
   const [text, setText] = useState(value === null ? "" : (value / 100).toFixed(2));
   useEffect(() => setText(value === null ? "" : (value / 100).toFixed(2)), [value]);
-  return <label className="money-inline"><input aria-label="Betrag" inputMode="decimal" value={text} placeholder="—" onChange={(event) => { setText(event.target.value); const parsed = parseMoney(event.target.value); if (parsed !== undefined) onChange(parsed); }} /><b>{currency}</b></label>;
+  return <label className="money-inline"><input aria-label="Betrag" inputMode="decimal" value={text} placeholder="—" onChange={(event) => { setText(event.target.value); const parsed = parseMoney(event.target.value); if (parsed !== undefined) onChange(parsed); }} /><b>{currency === UNKNOWN_CURRENCY ? "—" : currency}</b></label>;
 }
 
-function StatusPill({ calculations, uncertaintyCount, compact = false }: { calculations: ReturnType<typeof calculateReceipt>; uncertaintyCount: number; compact?: boolean }) {
-  const tone = calculations.isBalanced ? "success" : calculations.missingPriceCount > 0 ? "incomplete" : "warning";
-  return <div className={`status-pill ${tone} ${compact ? "compact" : ""}`}>{calculations.isBalanced ? <CheckIcon /> : <AlertIcon />}<span><strong>{calculations.isBalanced ? "Beträge stimmen überein" : calculations.missingPriceCount > 0 ? "Unvollständige Daten" : "Prüfung erforderlich"}</strong>{!compact && <small>{uncertaintyCount ? `${uncertaintyCount} unsichere Felder` : calculations.isBalanced ? "Bereit zum Speichern" : "Gedruckte und berechnete Summe unterscheiden sich"}</small>}</span></div>;
+function StatusPill({ calculations, uncertaintyCount, currencyNeedsReview = false, compact = false }: { calculations: ReturnType<typeof calculateReceipt>; uncertaintyCount: number; currencyNeedsReview?: boolean; compact?: boolean }) {
+  const ready = calculations.isBalanced && !currencyNeedsReview;
+  const tone = ready ? "success" : calculations.missingPriceCount > 0 ? "incomplete" : "warning";
+  const title = calculations.isBalanced ? currencyNeedsReview ? "Währung prüfen" : "Beträge stimmen überein" : calculations.missingPriceCount > 0 ? "Unvollständige Daten" : "Prüfung erforderlich";
+  const hint = currencyNeedsReview ? "Währung auswählen oder bestätigen" : uncertaintyCount ? `${uncertaintyCount} unsichere Felder` : calculations.isBalanced ? "Bereit zum Speichern" : "Gedruckte und berechnete Summe unterscheiden sich";
+  return <div className={`status-pill ${tone} ${compact ? "compact" : ""}`}>{ready ? <CheckIcon /> : <AlertIcon />}<span><strong>{title}</strong>{!compact && <small>{hint}</small>}</span></div>;
 }
 
 function DetailRow({ label, value }: { label: string; value: string | null }) {

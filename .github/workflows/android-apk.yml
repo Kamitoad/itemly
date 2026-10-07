@@ -1,0 +1,64 @@
+name: Android PR validation
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/android-apk.yml
+      - android/**
+      - capacitor.config.ts
+      - index.html
+      - package.json
+      - pnpm-lock.yaml
+      - public/**
+      - shared/**
+      - src/**
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.24.0
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build and sync Android assets
+        run: pnpm android:sync
+      - name: Validate native compilation and signing configuration
+        working-directory: android
+        env:
+          ORG_GRADLE_PROJECT_itemlyPreview: 'true'
+          ORG_GRADLE_PROJECT_itemlyDurableSigning: 'true'
+          ITEMLY_SIGNING_STORE: ${{ runner.temp }}/itemly-test.p12
+          ITEMLY_SIGNING_ALIAS: itemly-preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          export ITEMLY_SIGNING_PASSWORD="$(openssl rand -hex 32)"
+          export ITEMLY_SIGNING_KEY_PASSWORD="$ITEMLY_SIGNING_PASSWORD"
+          keytool -genkeypair -keystore "$ITEMLY_SIGNING_STORE" -storetype PKCS12 -storepass:env ITEMLY_SIGNING_PASSWORD -keypass:env ITEMLY_SIGNING_KEY_PASSWORD -alias "$ITEMLY_SIGNING_ALIAS" -keyalg RSA -keysize 3072 -validity 2 -dname 'CN=Disposable CI fixture'
+          bash ./gradlew --no-daemon :app:assembleDebug
+      - name: Remove throwaway test key
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/itemly-test.p12"
+      # Compilation is automatic, distribution is not. Only the manually
+      # requested durable workflow uploads an APK intended for installation.

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
 import { createEmptyDraft, createEmptyItem, type SaveReceiptRequest } from "../shared/receipt.js";
+import { applyCurrencyPreference, confirmCurrency, UNKNOWN_CURRENCY } from "../shared/currency.js";
 import { openDatabase } from "../server/database.js";
 import { createBackupPayload, restoreBackupPayload } from "../server/backup.js";
 import {
@@ -11,7 +12,10 @@ import {
   getReceipt,
   listReceipts,
   ReceiptConflictError,
-  saveReceipt
+  saveReceipt,
+  updateReceipt,
+  changeReceiptDeleted,
+  storePendingExtraction
 } from "../server/repository.js";
 
 let directory: string;
@@ -19,7 +23,7 @@ let databasePath: string;
 let db: DatabaseSync;
 
 function validRequest(): SaveReceiptRequest {
-  const draft = createEmptyDraft();
+  const draft = createEmptyDraft("CAD");
   const item = createEmptyItem(1);
   item.normalizedName = "Large Eggs";
   item.rawName = "EGGS LG 12";
@@ -58,6 +62,100 @@ afterEach(() => {
 });
 
 describe("transactional receipt persistence", () => {
+  it("updates receipt and item CRUD in place while preserving original evidence", () => {
+    const request = validRequest();
+    const extractionId = crypto.randomUUID();
+    storePendingExtraction(db, { id: extractionId, provider: "chatgpt-paste", model: null, status: "completed", rawResult: { merchantName: "Walmart", totalMinor: 499 }, uncertaintyFields: [], validationErrors: [] });
+    request.extractionId = extractionId;
+    const id = saveReceipt(db, request);
+    const original = getReceipt(db, id)!;
+    const added = createEmptyItem(2);
+    added.normalizedName = "Milk";
+    added.lineTotalMinor = 100;
+    const draft = { ...original.draft, merchantName: "Corrected shop", totalMinor: 599, items: [{ ...original.draft.items[0], category: "Food" }, added] };
+    const update = { clientMutationId: crypto.randomUUID(), expectedRevision: 1, status: "confirmed" as const, draft };
+    expect(updateReceipt(db, id, update)).toBe(id);
+    expect(updateReceipt(db, id, update)).toBe(id);
+    const changed = getReceipt(db, id)!;
+    expect(changed).toMatchObject({ revision: 2, scannedAt: original.scannedAt, confirmedAt: original.confirmedAt, attachment: original.attachment });
+    expect(changed.draft.items).toHaveLength(2);
+    expect(changed.extractions).toEqual(original.extractions);
+    expect(changed.auditEvents.at(-1)?.oldValue).toEqual(original.draft);
+    expect(listReceipts(db)).toHaveLength(1);
+    expect(listReceipts(db, "Milk")).toHaveLength(1);
+    const remove = { ...update, clientMutationId: crypto.randomUUID(), expectedRevision: 2, draft: { ...draft, totalMinor: 100, items: [added] } };
+    updateReceipt(db, id, remove);
+    db.close(); db = openDatabase(databasePath);
+    expect(getReceipt(db, id)?.draft.items.map((item) => item.id)).toEqual([added.id]);
+    expect(listReceipts(db, "Eggs")).toHaveLength(0);
+  });
+
+  it("rejects stale or unbalanced updates and rolls back child conflicts", () => {
+    const id = saveReceipt(db, validRequest());
+    const original = getReceipt(db, id)!;
+    const input = { clientMutationId: crypto.randomUUID(), expectedRevision: 1, status: "confirmed" as const, draft: { ...original.draft, totalMinor: 500 } };
+    expect(() => updateReceipt(db, id, input)).toThrow("ausgeglichener");
+    expect(getReceipt(db, id)?.revision).toBe(1);
+    const otherId = saveReceipt(db, validRequest());
+    const collidingItem = getReceipt(db, otherId)!.draft.items[0];
+    expect(() => updateReceipt(db, id, { ...input, draft: { ...original.draft, merchantName: "Must roll back", items: [collidingItem] } })).toThrow();
+    expect(getReceipt(db, id)?.draft).toEqual(original.draft);
+    const good = { ...input, draft: original.draft };
+    updateReceipt(db, id, good);
+    expect(() => updateReceipt(db, id, { ...good, clientMutationId: crypto.randomUUID() })).toThrow("erneut");
+    expect(() => updateReceipt(db, otherId, { ...good, expectedRevision: 1 })).toThrow("anderen Vorgang");
+    const uncertain = { ...original.draft, currency: UNKNOWN_CURRENCY };
+    expect(() => updateReceipt(db, id, { ...good, clientMutationId: crypto.randomUUID(), expectedRevision: 2, draft: uncertain })).toThrow("Währung");
+    updateReceipt(db, id, { ...good, clientMutationId: crypto.randomUUID(), expectedRevision: 2, status: "draft", draft: uncertain });
+    expect(getReceipt(db, id)).toMatchObject({ revision: 3, status: "draft", validationState: "incomplete", confirmedAt: null });
+  });
+
+  it("soft-deletes and restores receipts idempotently, retaining items and shared images", () => {
+    const id = saveReceipt(db, validRequest());
+    const second = saveReceipt(db, validRequest());
+    const original = getReceipt(db, id)!;
+    const mutation = { clientMutationId: crypto.randomUUID(), expectedRevision: 1 };
+    changeReceiptDeleted(db, id, mutation, true);
+    changeReceiptDeleted(db, id, mutation, true);
+    expect(getReceipt(db, id)).toMatchObject({ revision: 2, draft: original.draft, attachment: original.attachment });
+    expect(listReceipts(db).map((row) => row.id)).toEqual([second]);
+    expect(listReceipts(db, "", true).map((row) => row.id)).toEqual([id]);
+    expect(findDuplicateByHash(db, "a".repeat(64))).toBe(second);
+    expect(() => updateReceipt(db, id, { clientMutationId: crypto.randomUUID(), expectedRevision: 2, status: "confirmed", draft: original.draft })).toThrow("gelöscht");
+    expect(() => changeReceiptDeleted(db, id, { clientMutationId: crypto.randomUUID(), expectedRevision: 1 }, false)).toThrow("erneut");
+    const restore = { clientMutationId: crypto.randomUUID(), expectedRevision: 2 };
+    changeReceiptDeleted(db, id, restore, false);
+    changeReceiptDeleted(db, id, restore, false);
+    expect(getReceipt(db, id)).toMatchObject({ revision: 3, deletedAt: null, draft: original.draft });
+    expect(listReceipts(db)).toHaveLength(2);
+    expect(listReceipts(db, "", true)).toHaveLength(0);
+  });
+
+  it("keeps missing and suggested currencies in drafts until reviewed", () => {
+    const request = validRequest();
+    request.draft.currency = UNKNOWN_CURRENCY;
+    expect(() => saveReceipt(db, request)).toThrow("Währung");
+    request.status = "draft";
+    const missingId = saveReceipt(db, request);
+    expect(getReceipt(db, missingId)).toMatchObject({ validationState: "incomplete", draft: { currency: UNKNOWN_CURRENCY } });
+
+    request.clientMutationId = crypto.randomUUID();
+    request.draft = applyCurrencyPreference(request.draft, "EUR");
+    request.draft.items = request.draft.items.map((item) => ({ ...item, id: crypto.randomUUID() }));
+    const suggestedId = saveReceipt(db, request);
+    db.close();
+    db = openDatabase(databasePath);
+    const stored = getReceipt(db, suggestedId)!;
+    expect(stored.draft.fieldSources.currency).toBe("uncertain");
+    expect(stored.draft.uncertaintyFields).toContain("currency");
+    request.clientMutationId = crypto.randomUUID();
+    request.status = "confirmed";
+    request.draft = stored.draft;
+    expect(() => saveReceipt(db, request)).toThrow("Währung");
+    request.draft = confirmCurrency(request.draft, "EUR");
+    request.draft.items = request.draft.items.map((item) => ({ ...item, id: crypto.randomUUID() }));
+    expect(getReceipt(db, saveReceipt(db, request))?.draft.currency).toBe("EUR");
+  });
   it("stores and reopens every item plus the original image reference", () => {
     const request = validRequest();
     const id = saveReceipt(db, request);
