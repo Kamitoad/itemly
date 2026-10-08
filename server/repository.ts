@@ -1,5 +1,5 @@
 import type { ReceiptDatabase } from "./database.js";
-import { needsCurrencyReview } from "../shared/currency.js";
+import { confirmedReceiptError, receiptValidationState } from "../shared/receipt-validation.js";
 import {
   calculateReceipt,
   receiptDraftSchema,
@@ -19,12 +19,6 @@ function now(): string {
 
 function normalizedMerchant(name: string): string {
   return name.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-CA");
-}
-
-function validationState(draft: ReceiptDraft): "incomplete" | "discrepancy" | "balanced" {
-  const calculation = calculateReceipt(draft);
-  if (draft.totalMinor === null || calculation.missingPriceCount > 0 || needsCurrencyReview(draft)) return "incomplete";
-  return calculation.isBalanced ? "balanced" : "discrepancy";
 }
 
 export function storePendingExtraction(
@@ -85,13 +79,9 @@ function persistReceipt(db: ReceiptDatabase, request: SaveReceiptRequest, update
   if (existing && update) throw new ReceiptConflictError("Diese Änderungs-ID wurde bereits verwendet.");
 
   const draft = receiptDraftSchema.parse(request.draft);
-  if (request.status === "confirmed" && needsCurrencyReview(draft)) {
-    throw new ReceiptConflictError("Bitte wähle oder bestätige die Währung. Der Bon kann bereits als Entwurf gespeichert werden.");
-  }
+  const confirmationError = confirmedReceiptError(request.status, draft);
+  if (confirmationError) throw new ReceiptConflictError(confirmationError);
   const calculation = calculateReceipt(draft);
-  if (request.status === "confirmed" && !calculation.isBalanced) {
-    throw new ReceiptConflictError("Ein nicht ausgeglichener Bon kann nur als Entwurf gespeichert werden.");
-  }
 
   const receiptId = update?.id ?? crypto.randomUUID();
   const createdAt = now();
@@ -154,7 +144,7 @@ function persistReceipt(db: ReceiptDatabase, request: SaveReceiptRequest, update
         calculation.itemCount === null ? null : String(calculation.itemCount),
         calculation.positionCount,
         request.status,
-        validationState(draft),
+        receiptValidationState(draft),
         createdAt,
         request.status === "confirmed" ? previous?.confirmedAt ?? createdAt : null,
         draft.notes,

@@ -1,22 +1,22 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
   calculateReceipt,
   createEmptyDraft,
-  createEmptyItem,
   createUuid,
   formatMoney,
   type AttachmentToken,
-  type ReceiptDraft,
-  type ReceiptItem
+  type ReceiptDraft
 } from "../shared/receipt";
 import { chatGptReceiptPrompt } from "../shared/receipt-import";
-import { replaceReceiptItems } from "../shared/receipt-edit";
 import { copyText } from "./clipboard";
 import BackupPanel from "./BackupPanel";
+import ReviewScreen from "./review/ReviewScreen.js";
+import StatusPill from "./components/StatusPill.js";
+import { ReceiptIcon, ReceiptLargeIcon, CameraIcon, ImageIcon, CheckIcon, AlertIcon, ArrowIcon, ShieldIcon, LockIcon, HistoryIcon, ChevronIcon, DatabaseIcon, DownloadIcon, SearchIcon, CodeIcon, SunIcon, MoonIcon } from "./components/icons.js";
 import { Capacitor } from "@capacitor/core";
 import { groupHistoryEntries } from "./history";
 import { selectNativeImage } from "./native/image-picker";
-import { applyCurrencyPreference, confirmCurrency, isKnownCurrency, needsCurrencyReview, UNKNOWN_CURRENCY } from "../shared/currency";
+import { applyCurrencyPreference, isKnownCurrency, needsCurrencyReview } from "../shared/currency";
 import { currencyToRemember, readLastCurrency, writeLastCurrency } from "./currency-preference";
 import {
   extractReceipt,
@@ -568,199 +568,6 @@ function ExtractingScreen({ previewUrl }: { previewUrl: string | null }) {
   );
 }
 
-function ReviewScreen({
-  draft,
-  imageUrl,
-  onChange,
-  onNext,
-  onSaveDraft,
-  saving,
-  editing,
-  onCancel,
-  focusedItemId
-}: {
-  draft: ReceiptDraft;
-  imageUrl: string | null;
-  onChange: (draft: ReceiptDraft) => void;
-  onNext: () => void;
-  onSaveDraft: () => void;
-  saving: boolean;
-  editing: boolean;
-  onCancel: () => void;
-  focusedItemId: string | null;
-}) {
-  const [showImage, setShowImage] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(focusedItemId ?? draft.items[0]?.id ?? null);
-  const [removed, setRemoved] = useState<{ item: ReceiptItem; index: number; snapshot: ReceiptDraft } | null>(null);
-  const calculations = useMemo(() => calculateReceipt(draft), [draft]);
-
-  function field<K extends keyof ReceiptDraft>(key: K, value: ReceiptDraft[K]) {
-    if (key === "currency") {
-      onChange(confirmCurrency(draft, value as string));
-    } else {
-      onChange({ ...draft, [key]: value, fieldSources: { ...draft.fieldSources, [key]: "user_entered" } });
-    }
-  }
-
-  function updateItem(id: string, item: ReceiptItem) {
-    onChange({ ...draft, items: draft.items.map((current) => current.id === id ? item : current) });
-  }
-
-  function removeItem(id: string) {
-    const index = draft.items.findIndex((item) => item.id === id);
-    if (index < 0) return;
-    setRemoved({ item: draft.items[index], index, snapshot: draft });
-    onChange(replaceReceiptItems(draft, draft.items.filter((item) => item.id !== id)));
-    setExpandedId(null);
-  }
-
-  function undoRemove() {
-    if (!removed) return;
-    const next = [...draft.items];
-    next.splice(removed.index, 0, removed.item);
-    onChange(replaceReceiptItems(draft, next, removed.snapshot));
-    setRemoved(null);
-  }
-
-  function addItem() {
-    const item = createEmptyItem(draft.items.length + 1);
-    onChange({ ...draft, items: [...draft.items, item] });
-    setExpandedId(item.id);
-  }
-
-  return (
-    <section className="page review-page" inert={saving}>
-      <div className="review-heading">
-        <div><div className="eyebrow">{editing ? "Gespeicherten Beleg ändern" : "Ergebnis kontrollieren"}</div><h1>{editing ? "Beleg bearbeiten" : "Einkauf prüfen"}</h1></div>
-        {imageUrl && <button className="button ghost" onClick={() => setShowImage(!showImage)}><ReceiptIcon /> {showImage ? "Bon ausblenden" : "Originalbon"}</button>}
-      </div>
-
-      {editing && <div className="edit-notice"><p>Du bearbeitest den bestehenden Beleg. Originalbild und ursprüngliche Auswertung bleiben erhalten.</p><button className="text-button" onClick={onCancel}>Bearbeitung abbrechen</button></div>}
-
-      <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} currencyNeedsReview={needsCurrencyReview(draft)} />
-      {showImage && imageUrl && <div className="receipt-image-panel"><img src={imageUrl} alt="Originaler Kassenbon" /></div>}
-
-      <section className="section-card metadata-card">
-        <div className="section-title"><div className="section-icon"><StoreIcon /></div><div><h2>Bonangaben</h2><p>Tippe in ein Feld, um es zu korrigieren.</p></div></div>
-        <div className="field-grid">
-          <CurrencyField draft={draft} onConfirm={(currency) => field("currency", currency)} />
-          <Field label="Händler" value={draft.merchantName} placeholder="Unbekannt" onChange={(value) => field("merchantName", value)} />
-          <Field label="Filiale" value={draft.storeName} placeholder="Unbekannt" onChange={(value) => field("storeName", value)} />
-          <Field label="Adresse" value={draft.addressText} placeholder="Unbekannt" wide onChange={(value) => field("addressText", value)} />
-          <Field label="Datum" type="date" value={draft.purchasedDate} placeholder="Unbekannt" onChange={(value) => field("purchasedDate", value)} />
-          <Field label="Uhrzeit" type="time" value={draft.purchasedTime} placeholder="Unbekannt" onChange={(value) => field("purchasedTime", value)} />
-          <Field label="Bonnummer" value={draft.receiptNumber} placeholder="Unbekannt" onChange={(value) => field("receiptNumber", value)} />
-          <Field label="Transaktions-ID" value={draft.transactionId} placeholder="Unbekannt" onChange={(value) => field("transactionId", value)} />
-        </div>
-      </section>
-
-      <section className="items-section">
-        <div className="items-header"><div><h2>Artikel</h2><p>{calculations.positionCount} Positionen · {draft.items.filter((item) => item.verified).length} geprüft</p></div><button className="button secondary compact" onClick={addItem}>＋ Artikel</button></div>
-        <div className="item-list">
-          {draft.items.length === 0 && <div className="empty-card"><BasketIcon /><h3>Noch keine Artikel</h3><p>Füge die erste Position manuell hinzu.</p><button className="button primary" onClick={addItem}>Artikel hinzufügen</button></div>}
-          {draft.items.map((item, index) => (
-            <ItemCard
-              key={item.id}
-              item={item}
-              index={index}
-              currency={draft.currency}
-              expanded={expandedId === item.id}
-              onToggle={() => setExpandedId(expandedId === item.id ? null : item.id)}
-              onChange={(changed) => updateItem(item.id, changed)}
-              onRemove={() => removeItem(item.id)}
-            />
-          ))}
-        </div>
-        {removed && <div className="undo-bar"><span>„{removed.item.normalizedName || "Artikel"}“ entfernt</span><button onClick={undoRemove}>Rückgängig</button></div>}
-      </section>
-
-      <section className="section-card metadata-card">
-        <div className="section-title"><div className="section-icon"><CardIcon /></div><div><h2>Zahlung</h2><p>Es werden nur sichtbare Kartendaten gespeichert.</p></div></div>
-        <div className="field-grid">
-          <Field label="Zahlungsart" value={draft.paymentMethod} placeholder="Unbekannt" onChange={(value) => field("paymentMethod", value)} />
-          <Field label="Kartenmarke" value={draft.cardBrand} placeholder="Unbekannt" onChange={(value) => field("cardBrand", value)} />
-          <Field label="Letzte 4 Ziffern" value={draft.displayedLast4} placeholder="Unbekannt" onChange={(value) => field("displayedLast4", value && /^\d{0,4}$/.test(value) ? value : draft.displayedLast4)} />
-        </div>
-      </section>
-
-      <section className={`summary-card ${calculations.isBalanced ? "balanced" : "warning"}`}>
-        <div className="summary-heading"><div><span className="section-icon"><CalculatorIcon /></span><h2>Bonabgleich</h2></div><span className="balance-badge">{calculations.isBalanced ? <><CheckIcon /> Stimmt überein</> : <><AlertIcon /> Prüfung nötig</>}</span></div>
-        <div className="summary-rows">
-          <SummaryMoney label="Summe der Positionen" value={calculations.itemsTotalMinor} currency={draft.currency} readOnly />
-          <SummaryMoney label="Gedruckte Zwischensumme" value={draft.subtotalMinor} currency={draft.currency} onChange={(value) => field("subtotalMinor", value)} />
-          <SummaryMoney label="Rabatte auf den Gesamtbon" value={draft.receiptDiscountMinor} currency={draft.currency} onChange={(value) => field("receiptDiscountMinor", value)} />
-          <SummaryMoney label="Steuern (GST/PST)" value={draft.taxTotalMinor} currency={draft.currency} onChange={(value) => field("taxTotalMinor", value)} />
-          <SummaryMoney label="Gedruckter Gesamtbetrag" value={draft.totalMinor} currency={draft.currency} onChange={(value) => field("totalMinor", value)} emphasized />
-          <SummaryMoney label="Aus Daten berechnet" value={calculations.calculatedTotalMinor} currency={draft.currency} readOnly emphasized />
-        </div>
-        {!calculations.isBalanced && (
-          <div className="difference-row">
-            <span>Differenz</span><strong>{formatMoney(calculations.differenceMinor, draft.currency)}</strong>
-            <small>{calculations.missingPriceCount > 0 ? `${calculations.missingPriceCount} Position(en) ohne Preis.` : "Prüfe Rabatte, Steuern oder zusätzliche Gebühren."}</small>
-          </div>
-        )}
-      </section>
-
-      <section className="section-card notes-card">
-        <label><span>Weitere Informationen</span><textarea rows={4} value={draft.notes} placeholder="Optionale persönliche Notizen …" onChange={(event) => field("notes", event.target.value)} /></label>
-      </section>
-
-      <div className="sticky-actions">
-        <button className="button ghost" disabled={saving} onClick={onSaveDraft}>Als Entwurf</button>
-        <button className="button primary" onClick={onNext}>Weiter <ArrowIcon /></button>
-      </div>
-    </section>
-  );
-}
-
-function ItemCard({ item, index, currency, expanded, onToggle, onChange, onRemove }: {
-  item: ReceiptItem;
-  index: number;
-  currency: string;
-  expanded: boolean;
-  onToggle: () => void;
-  onChange: (item: ReceiptItem) => void;
-  onRemove: () => void;
-}) {
-  const set = <K extends keyof ReceiptItem>(key: K, value: ReceiptItem[K]) => onChange({ ...item, [key]: value, source: "user_entered" });
-  return (
-    <article className={`item-card ${expanded ? "expanded" : ""} ${item.uncertainties.length ? "uncertain" : ""}`}>
-      <div className="item-overview">
-        <button className={`verify-box ${item.verified ? "checked" : ""}`} aria-label={item.verified ? "Als ungeprüft markieren" : "Als geprüft markieren"} onClick={() => set("verified", !item.verified)}>{item.verified && <CheckIcon />}</button>
-        <button className="item-main" onClick={onToggle}>
-          <span className="item-number">{String(index + 1).padStart(2, "0")}</span>
-          <span className="item-copy">
-            <strong>{item.normalizedName || "Unbenannter Artikel"}</strong>
-            <small>{[item.quantity && `${item.quantity} ${item.quantityUnit ?? ""}`, item.packageSize && `${item.packageSize} ${item.packageUnit ?? ""}`].filter(Boolean).join(" · ") || "Menge unbekannt"}</small>
-            {item.uncertainties.length > 0 && <em><AlertIcon /> Unsichere Erkennung</em>}
-          </span>
-          <span className="item-price">{formatMoney(item.lineTotalMinor, currency)}<small>{expanded ? "Schließen" : "Bearbeiten"} <ChevronIcon up={expanded} /></small></span>
-        </button>
-      </div>
-      {expanded && (
-        <div className="item-editor">
-          {item.rawName && <div className="raw-label"><span>Original auf dem Bon</span><code>{item.rawName}</code></div>}
-          <div className="field-grid">
-            <Field label="Produktname" value={item.normalizedName} placeholder="Produktname" onChange={(value) => set("normalizedName", value ?? "")} wide />
-            <Field label="Beschreibung" value={item.description} placeholder="Optional" onChange={(value) => set("description", value)} wide />
-            <Field label="Menge" inputMode="decimal" value={item.quantity} placeholder="Unbekannt" onChange={(value) => set("quantity", decimalOrPrevious(value, item.quantity))} />
-            <Field label="Mengeneinheit" value={item.quantityUnit} placeholder="z. B. Stück" onChange={(value) => set("quantityUnit", value)} />
-            <Field label="Packungsgröße" inputMode="decimal" value={item.packageSize} placeholder="Unbekannt" onChange={(value) => set("packageSize", decimalOrPrevious(value, item.packageSize))} />
-            <Field label="Packungseinheit" value={item.packageUnit} placeholder="z. B. g" onChange={(value) => set("packageUnit", value)} />
-            <MoneyField label="Stückpreis" value={item.unitPriceMinor} currency={currency} onChange={(value) => set("unitPriceMinor", value)} />
-            <MoneyField label="Positionssumme" value={item.lineTotalMinor} currency={currency} onChange={(value) => set("lineTotalMinor", value)} />
-            <Field label="Kategorie" value={item.category} placeholder="Optional" onChange={(value) => set("category", value)} />
-            <Field label="SKU / Produktcode" value={item.sku} placeholder="Optional" onChange={(value) => set("sku", value)} />
-            <Field label="Notiz" value={item.notes} placeholder="Optional" onChange={(value) => set("notes", value)} wide />
-          </div>
-          <p className="verification-help">Das Häkchen markiert nur deine Prüfung. Der Artikel zählt unabhängig davon zur Summe.</p>
-          <div className="editor-actions"><button className="danger-link" onClick={onRemove}>Artikel entfernen</button><button className="button primary compact" onClick={onToggle}>Fertig</button></div>
-        </div>
-      )}
-    </article>
-  );
-}
-
 function SaveScreen({ draft, imageUrl, onBack, onSave, saving, editing }: {
   draft: ReceiptDraft;
   imageUrl: string | null;
@@ -896,78 +703,8 @@ function DetailScreen({ receipt, onBack, onNew, onEdit, onDelete, onRestore, sav
   );
 }
 
-function Field({ label, value, onChange, placeholder, type = "text", wide = false, inputMode }: {
-  label: string;
-  value: string | null;
-  onChange: (value: string | null) => void;
-  placeholder: string;
-  type?: string;
-  wide?: boolean;
-  inputMode?: "decimal";
-}) {
-  return <label className={`field ${wide ? "wide" : ""}`}><span>{label}</span><input type={type} inputMode={inputMode} value={value ?? ""} placeholder={placeholder} onChange={(event) => onChange(event.target.value || null)} /></label>;
-}
-
-function CurrencyField({ draft, onConfirm }: { draft: ReceiptDraft; onConfirm: (currency: string) => void }) {
-  const pending = needsCurrencyReview(draft);
-  const known = isKnownCurrency(draft.currency);
-  const options = [...new Set(["CAD", "EUR", "USD", "GBP", ...(known ? [draft.currency] : [])])];
-  return <div className={`field wide currency-field ${pending ? "needs-review" : ""}`}>
-    <label htmlFor="receipt-currency">Währung{pending ? " · Bitte prüfen" : ""}</label>
-    <div className="currency-controls">
-      <select id="receipt-currency" value={draft.currency} aria-describedby={pending ? "currency-hint" : undefined} aria-invalid={pending} onChange={(event) => onConfirm(event.target.value)}>
-        <option value={UNKNOWN_CURRENCY}>Bitte Währung wählen</option>
-        {options.map((currency) => <option key={currency} value={currency}>{currency}</option>)}
-      </select>
-      {pending && known && <button className="button secondary compact" onClick={() => onConfirm(draft.currency)}>{draft.currency} bestätigen</button>}
-    </div>
-    {pending && <p id="currency-hint" role="status">{known ? `Die Währung wurde nicht sicher erkannt. ${draft.currency} ist vorbelegt – bitte bestätigen oder ändern.` : "Die Währung fehlt oder wurde nicht erkannt. Bitte auswählen; dein JSON musst du dafür nicht ändern."}</p>}
-  </div>;
-}
-
-function MoneyField({ label, value, currency, onChange }: { label: string; value: number | null; currency: string; onChange: (value: number | null) => void }) {
-  const [text, setText] = useState(value === null ? "" : (value / 100).toFixed(2));
-  useEffect(() => setText(value === null ? "" : (value / 100).toFixed(2)), [value]);
-  return <label className="field money-field"><span>{label}</span><div><input inputMode="decimal" value={text} placeholder="0,00" onChange={(event) => { setText(event.target.value); const parsed = parseMoney(event.target.value); if (parsed !== undefined) onChange(parsed); }} /><b>{currency === UNKNOWN_CURRENCY ? "—" : currency}</b></div></label>;
-}
-
-function SummaryMoney({ label, value, currency, onChange, readOnly = false, emphasized = false }: { label: string; value: number | null; currency: string; onChange?: (value: number | null) => void; readOnly?: boolean; emphasized?: boolean }) {
-  return <div className={emphasized ? "emphasized" : ""}><span>{label}</span>{readOnly ? <strong>{formatMoney(value, currency)}</strong> : <MoneyInline value={value} currency={currency} onChange={onChange!} />}</div>;
-}
-
-function MoneyInline({ value, currency, onChange }: { value: number | null; currency: string; onChange: (value: number | null) => void }) {
-  const [text, setText] = useState(value === null ? "" : (value / 100).toFixed(2));
-  useEffect(() => setText(value === null ? "" : (value / 100).toFixed(2)), [value]);
-  return <label className="money-inline"><input aria-label="Betrag" inputMode="decimal" value={text} placeholder="—" onChange={(event) => { setText(event.target.value); const parsed = parseMoney(event.target.value); if (parsed !== undefined) onChange(parsed); }} /><b>{currency === UNKNOWN_CURRENCY ? "—" : currency}</b></label>;
-}
-
-function StatusPill({ calculations, uncertaintyCount, currencyNeedsReview = false, compact = false }: { calculations: ReturnType<typeof calculateReceipt>; uncertaintyCount: number; currencyNeedsReview?: boolean; compact?: boolean }) {
-  const ready = calculations.isBalanced && !currencyNeedsReview;
-  const tone = ready ? "success" : calculations.missingPriceCount > 0 ? "incomplete" : "warning";
-  const title = calculations.isBalanced ? currencyNeedsReview ? "Währung prüfen" : "Beträge stimmen überein" : calculations.missingPriceCount > 0 ? "Unvollständige Daten" : "Prüfung erforderlich";
-  const hint = currencyNeedsReview ? "Währung auswählen oder bestätigen" : uncertaintyCount ? `${uncertaintyCount} unsichere Felder` : calculations.isBalanced ? "Bereit zum Speichern" : "Gedruckte und berechnete Summe unterscheiden sich";
-  return <div className={`status-pill ${tone} ${compact ? "compact" : ""}`}>{ready ? <CheckIcon /> : <AlertIcon />}<span><strong>{title}</strong>{!compact && <small>{hint}</small>}</span></div>;
-}
-
 function DetailRow({ label, value }: { label: string; value: string | null }) {
   return <div><dt>{label}</dt><dd className={!value ? "unknown" : ""}>{value || "Unbekannt"}</dd></div>;
-}
-
-function parseMoney(value: string): number | null | undefined {
-  const normalized = value.trim().replace(",", ".");
-  if (!normalized) return null;
-  if (!/^-?\d+(?:\.\d{0,2})?$/.test(normalized)) return undefined;
-  const negative = normalized.startsWith("-");
-  const unsigned = negative ? normalized.slice(1) : normalized;
-  const [whole, decimal = ""] = unsigned.split(".");
-  const minor = Number(whole) * 100 + Number(decimal.padEnd(2, "0"));
-  return negative ? -minor : minor;
-}
-
-function decimalOrPrevious(value: string | null, previous: string | null): string | null {
-  if (value === null) return null;
-  const normalized = value.replace(",", ".");
-  return /^\d+(?:\.\d{0,6})?$/.test(normalized) ? normalized : previous;
 }
 
 function statusText(validation: HistoryEntry["validationState"], status: HistoryEntry["status"]) {
@@ -983,28 +720,3 @@ function formatHistoryTime(purchasedTime: string | null, scannedAt: string): str
   if (Number.isNaN(scanned.getTime())) return "Uhrzeit unbekannt";
   return `${new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(scanned)} Uhr`;
 }
-
-function Icon({ children, viewBox = "0 0 24 24" }: { children: ReactNode; viewBox?: string }) {
-  return <svg viewBox={viewBox} aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{children}</svg>;
-}
-const ReceiptIcon = () => <Icon><path d="M6 3h12v18l-2-1.5L14 21l-2-1.5L10 21l-2-1.5L6 21V3Z"/><path d="M9 8h6M9 12h6M9 16h3"/></Icon>;
-const ReceiptLargeIcon = () => <Icon><path d="M6 2.5h12v19l-2-1.5-2 1.5-2-1.5-2 1.5L8 20l-2 1.5v-19Z"/><path d="M9 8h6M9 12h6M9 16h3"/></Icon>;
-const CameraIcon = () => <Icon><path d="M4 8h3l2-3h6l2 3h3v11H4V8Z"/><circle cx="12" cy="13" r="3.5"/></Icon>;
-const ImageIcon = () => <Icon><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="m4 17 5-5 4 4 2-2 5 5"/></Icon>;
-const CheckIcon = () => <Icon><path d="m5 12 4 4L19 6"/></Icon>;
-const AlertIcon = () => <Icon><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v4M12 17h.01"/></Icon>;
-const ArrowIcon = () => <Icon><path d="M5 12h14M14 7l5 5-5 5"/></Icon>;
-const ShieldIcon = () => <Icon><path d="M12 3 5 6v5c0 4.6 2.8 8.2 7 10 4.2-1.8 7-5.4 7-10V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></Icon>;
-const LockIcon = () => <Icon><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></Icon>;
-const HistoryIcon = () => <Icon><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></Icon>;
-const StoreIcon = () => <Icon><path d="m4 10 1-6h14l1 6M5 10v10h14V10M9 20v-6h6v6"/><path d="M3 10c0 2 3 2 3 0 0 2 3 2 3 0 0 2 3 2 3 0 0 2 3 2 3 0 0 2 3 2 3 0"/></Icon>;
-const BasketIcon = () => <Icon><path d="M4 9h16l-2 11H6L4 9ZM8 9l4-6 4 6M9 13v3M15 13v3"/></Icon>;
-const CardIcon = () => <Icon><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h3"/></Icon>;
-const CalculatorIcon = () => <Icon><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M8 5h8v4H8zM8 13h.01M12 13h.01M16 13h.01M8 17h.01M12 17h.01M16 17h.01"/></Icon>;
-const ChevronIcon = ({ up = false }: { up?: boolean }) => <Icon><path d={up ? "m7 15 5-5 5 5" : "m7 9 5 5 5-5"}/></Icon>;
-const DatabaseIcon = () => <Icon><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></Icon>;
-const DownloadIcon = () => <Icon><path d="M12 3v12M7 10l5 5 5-5M4 20h16"/></Icon>;
-const SearchIcon = () => <Icon><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></Icon>;
-const CodeIcon = () => <Icon><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14"/></Icon>;
-const SunIcon = () => <Icon><circle cx="12" cy="12" r="3.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></Icon>;
-const MoonIcon = () => <Icon><path d="M20 15.2A8.5 8.5 0 0 1 8.8 4 8.5 8.5 0 1 0 20 15.2Z"/></Icon>;

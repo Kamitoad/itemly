@@ -12,5 +12,6 @@
     "noEmit": true,
     "types": ["node", "vitest/globals", "vite/client"]
   },
-  "include": ["server", "shared", "tests", "vite.config.ts"]
+  "include": ["server", "shared", "tests", "vite.config.ts"],
+  "exclude": ["tests/**/*.tsx"]
 }

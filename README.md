@@ -70,7 +70,7 @@ Itemly v0.1.0 has no user accounts or access control. Run the server only on a p
 
 ## Experimental Android build
 
-The Android project is in `android/`. It bundles the React UI and routes receipt capture, manual entry, ChatGPT JSON import, saves, history, and detail views to app-private storage rather than the PC API. After installing Android Studio and its SDK, run `pnpm android:sync`, open the project with `pnpm android:open`, and deploy a debug build to a device. The [Android prototype guide](docs/ANDROID.md) lists the required real-device tests and current limitations. Existing receipts in the PC database are **not** automatically copied to the phone. Phone backup/restore is not implemented yet; do not treat the prototype as the only copy of important receipts.
+The Android project is in `android/`. It bundles the React UI and routes receipt capture, manual entry, ChatGPT JSON import, saves, history, and detail views to app-private storage rather than the PC API. After installing Android Studio and its SDK, run `pnpm android:sync`, open the project with `pnpm android:open`, and deploy a debug build to a device. The [Android prototype guide](docs/ANDROID.md) lists the required real-device tests and current limitations. User-initiated Android backup export and restoration are implemented, but acceptance on a physical device is still pending. Existing receipts in the PC database are **not** automatically copied to the phone, and migration from webserver backups to Android is not implemented. The backup formats remain separate; do not treat the prototype as the only copy of important receipts.
 
 ## Capture receipts without an API key
 
@@ -119,6 +119,8 @@ pnpm build
 ```
 
 Tests cover schema validation, arithmetic, discounts, taxes, fees, uncertainties, duplicate detection, idempotency, transactions, backups, and extraction failures. The same checks run on pushes and pull requests in GitHub Actions.
+
+Rendered React interaction tests also cover receipt review and money-field editing. These DOM tests are distinct from browser layout checks and physical Android acceptance; see [testing and verification](docs/TESTING.md).
 
 ## Architecture and project information
 

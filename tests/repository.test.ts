@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
 import { createEmptyDraft, createEmptyItem, type SaveReceiptRequest } from "../shared/receipt.js";
 import { applyCurrencyPreference, confirmCurrency, UNKNOWN_CURRENCY } from "../shared/currency.js";
+import { receiptValidationCases, validationDraft } from "./receipt-validation-cases.js";
 import { openDatabase } from "../server/database.js";
 import { createBackupPayload, restoreBackupPayload } from "../server/backup.js";
 import {
@@ -62,6 +63,32 @@ afterEach(() => {
 });
 
 describe("transactional receipt persistence", () => {
+  it.each(receiptValidationCases)("preserves create/update validation for $name", ({ change, state, error }) => {
+    const draft = validationDraft(change);
+    const request: SaveReceiptRequest = { clientMutationId: crypto.randomUUID(), status: "confirmed", draft, attachment: null, extractionId: null };
+    let id: string;
+    if (error) {
+      expect(() => saveReceipt(db, request)).toThrow(error);
+      expect(listReceipts(db)).toHaveLength(0);
+      id = saveReceipt(db, { ...request, status: "draft" });
+    } else {
+      id = saveReceipt(db, request);
+      expect(saveReceipt(db, request)).toBe(id);
+    }
+    expect(getReceipt(db, id)).toMatchObject({ validationState: state, revision: 1 });
+    const update = { clientMutationId: crypto.randomUUID(), expectedRevision: 1, status: "confirmed" as const, draft };
+    if (error) {
+      expect(() => updateReceipt(db, id, update)).toThrow(error);
+      expect(getReceipt(db, id)).toMatchObject({ revision: 1, status: "draft" });
+      updateReceipt(db, id, { ...update, status: "draft" });
+    } else {
+      expect(updateReceipt(db, id, update)).toBe(id);
+      expect(updateReceipt(db, id, update)).toBe(id);
+    }
+    expect(getReceipt(db, id)).toMatchObject({ validationState: state, revision: 2, draft: { totalMinor: draft.totalMinor, items: draft.items } });
+    expect(listReceipts(db)).toHaveLength(1);
+  });
+
   it("updates receipt and item CRUD in place while preserving original evidence", () => {
     const request = validRequest();
     const extractionId = crypto.randomUUID();
