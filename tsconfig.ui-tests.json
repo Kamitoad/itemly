@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals", "vite/client"]
+  },
+  "include": ["tests/**/*.test.tsx", "src/vite-env.d.ts"]
+}

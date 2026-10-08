@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createEmptyDraft, createEmptyItem, createUuid } from "../shared/receipt.js";
 import { applyCurrencyPreference, confirmCurrency } from "../shared/currency.js";
 import { parseNativeBackup } from "../shared/native-backup.js";
+import { receiptValidationCases, validationDraft } from "./receipt-validation-cases.js";
 
 type TestRow = {
   id: string;
@@ -81,6 +82,32 @@ beforeEach(() => {
 });
 
 describe("phone-local receipt adapter", () => {
+  it.each(receiptValidationCases)("preserves create/update validation for $name", async ({ change, state: expectedState, error }) => {
+    const draft = validationDraft(change);
+    const input = { clientMutationId: createUuid(), status: "confirmed" as const, draft, attachment: null, extractionId: null };
+    let saved;
+    if (error) {
+      await expect(nativeApi.saveReceipt(input)).rejects.toThrow(error);
+      expect((await nativeApi.loadHistory()).receipts).toHaveLength(0);
+      saved = await nativeApi.saveReceipt({ ...input, status: "draft" });
+    } else {
+      saved = await nativeApi.saveReceipt(input);
+      expect((await nativeApi.saveReceipt(input)).id).toBe(saved.id);
+    }
+    expect(saved.receipt).toMatchObject({ validationState: expectedState, revision: 1 });
+    const update = { clientMutationId: createUuid(), expectedRevision: 1, status: "confirmed" as const, draft };
+    if (error) {
+      await expect(nativeApi.updateReceipt(saved.id, update)).rejects.toThrow(error);
+      expect((await nativeApi.loadReceipt(saved.id)).receipt).toMatchObject({ revision: 1, status: "draft" });
+      await nativeApi.updateReceipt(saved.id, { ...update, status: "draft" });
+    } else {
+      await nativeApi.updateReceipt(saved.id, update);
+      expect((await nativeApi.updateReceipt(saved.id, update)).receipt.revision).toBe(2);
+    }
+    expect((await nativeApi.loadReceipt(saved.id)).receipt).toMatchObject({ validationState: expectedState, revision: 2, draft: { totalMinor: draft.totalMinor, items: draft.items } });
+    expect((await nativeApi.loadHistory()).receipts).toHaveLength(1);
+  });
+
   async function createBackupFixture() {
     const bytes = new TextEncoder().encode("backup-image");
     const file = { name: "receipt.jpg", type: "image/jpeg", size: bytes.byteLength, arrayBuffer: async () => bytes.buffer } as unknown as File;

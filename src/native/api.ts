@@ -1,5 +1,5 @@
 import { Directory, Filesystem } from "@capacitor/filesystem";
-import { needsCurrencyReview } from "../../shared/currency.js";
+import { confirmedReceiptError, receiptValidationState } from "../../shared/receipt-validation.js";
 import { CapacitorSQLite, SQLiteConnection, type SQLiteDBConnection } from "@capacitor-community/sqlite";
 import {
   attachmentTokenSchema,
@@ -18,7 +18,7 @@ import {
 } from "../../shared/receipt.js";
 import { parsePastedReceiptJson } from "../../shared/receipt-import.js";
 import { groupHistoryEntries } from "../history.js";
-import type { AppConfig, HistoryEntry, StoredReceipt } from "../api.js";
+import type { AppConfig, HistoryEntry, StoredReceipt } from "../../shared/receipt-api.js";
 import initialMigration from "./migrations/001_initial.sql?raw";
 import crudMigration from "./migrations/002_receipt_crud.sql?raw";
 import { validateNativeBackup, type NativeBackup } from "../../shared/native-backup.js";
@@ -256,19 +256,13 @@ async function mapReceipt(row: ReceiptRow): Promise<StoredReceipt> {
     revision: row.revision,
     deletedAt: row.deleted_at,
     status: row.status,
-    validationState: validationState(draft),
+    validationState: receiptValidationState(draft),
     scannedAt: row.scanned_at,
     confirmedAt: row.confirmed_at,
     draft,
     attachment: await storedAttachment(row.attachment_json),
     calculations: calculateReceipt(draft)
   };
-}
-
-function validationState(draft: ReturnType<typeof receiptDraftSchema.parse>): StoredReceipt["validationState"] {
-  const calculation = calculateReceipt(draft);
-  if (draft.totalMinor === null || calculation.missingPriceCount > 0 || needsCurrencyReview(draft)) return "incomplete";
-  return calculation.isBalanced ? "balanced" : "discrepancy";
 }
 
 export async function saveReceipt(input: SaveReceiptRequest): Promise<{ id: string; receipt: StoredReceipt }> {
@@ -290,14 +284,8 @@ async function saveNewReceipt(input: SaveReceiptRequest): Promise<{ id: string; 
   const prior = await rows<ReceiptRow>("SELECT * FROM receipts WHERE client_mutation_id = ? LIMIT 1;", [request.clientMutationId]);
   if (prior[0]) return { id: prior[0].id, receipt: await mapReceipt(prior[0]) };
 
-  if (request.status === "confirmed" && needsCurrencyReview(request.draft)) {
-    throw new Error("Bitte wähle oder bestätige die Währung. Der Bon kann bereits als Entwurf gespeichert werden.");
-  }
-
-  const calculations = calculateReceipt(request.draft);
-  if (request.status === "confirmed" && !calculations.isBalanced) {
-    throw new Error("Ein nicht ausgeglichener Bon kann nur als Entwurf gespeichert werden.");
-  }
+  const confirmationError = confirmedReceiptError(request.status, request.draft);
+  if (confirmationError) throw new Error(confirmationError);
   const attachment = request.attachment ? attachmentTokenSchema.parse(request.attachment) : null;
   if (attachment) await ensureImageSaved(attachment);
   const id = createUuid();
@@ -345,7 +333,7 @@ async function loadHistoryUnlocked(search: string, trash: boolean): Promise<{ re
       currency: draft.currency,
       positionCount: calculateReceipt(draft).positionCount,
       status: row.status,
-      validationState: validationState(draft)
+      validationState: receiptValidationState(draft)
     } satisfies HistoryEntry];
   });
   return { receipts: groupHistoryEntries(entries).flatMap((group) => group.entries) };
@@ -380,8 +368,8 @@ async function mutateReceipt(id: string, input: ReceiptMutationRequest, action: 
       let oldValue: string | null;
       let newValue: string | null;
       if (update) {
-        if (update.status === "confirmed" && needsCurrencyReview(update.draft)) throw new Error("Bitte wähle oder bestätige die Währung. Der Bon kann bereits als Entwurf gespeichert werden.");
-        if (update.status === "confirmed" && !calculateReceipt(update.draft).isBalanced) throw new Error("Ein nicht ausgeglichener Bon kann nur als Entwurf gespeichert werden.");
+        const confirmationError = confirmedReceiptError(update.status, update.draft);
+        if (confirmationError) throw new Error(confirmationError);
         oldValue = previous.draft_json;
         newValue = JSON.stringify(update.draft);
         await db.run(`UPDATE receipts SET draft_json = ?, status = ?, confirmed_at = ?, revision = revision + 1 WHERE id = ?;`,

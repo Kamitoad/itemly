@@ -10,7 +10,17 @@ Itemly is a local TypeScript application with replaceable boundaries for extract
 - `server/migrations/` contains immutable, explicitly applied SQLite migrations.
 - `src/native/` contains the Capacitor Android persistence adapter and its own explicit SQLite migrations.
 - `android/` contains the generated, version-controlled Android project.
-- `tests/` covers domain logic, import boundaries, and persistence behavior.
+- `tests/` covers domain logic, import boundaries, persistence behavior, and rendered React interactions.
+
+## Review UI and shared contracts
+
+`src/App.tsx` owns navigation, receipt state, and persistence calls. `src/review/ReviewScreen.tsx` owns the existing review layout and add/remove/undo actions; `ItemCard.tsx` and `fields.tsx` contain its closely related controls. Status indicators and the existing SVG icons live in `src/components/` because other screens reuse them. Components receive drafts and callbacks rather than importing the application or storage adapter. CSS classes and the German mobile-first UI are unchanged.
+
+`src/money-input.ts` preserves editable text and caret independently of integer minor-unit values in the parent draft. Money inputs normalize on blur, retain invalid text, and clear the underlying amount rather than silently retaining an earlier valid value. The review's validity guard prevents continuing or saving while a rendered money field is invalid. Empty values remain allowed in incomplete drafts.
+
+`shared/receipt-api.ts` defines the common UI-facing configuration, history, and receipt contracts. `src/api.ts` re-exports these types for existing callers, and the native adapter imports the contracts directly rather than depending on the web client. The save request uses the existing schema-derived `SaveReceiptRequest`; calculated totals use the existing `ReceiptCalculations` type.
+
+`shared/receipt-validation.ts` contains only the equivalent validation-state calculation and confirmed-save currency/arithmetic checks. Adapters still own schema parsing, error types, idempotency/conflict ordering, transactions, and storage mapping. Web extraction/audit projections and Android-specific backup validation are intentionally not unified. No database migration or backup-format change is involved. See [testing and verification](TESTING.md) for the test boundaries.
 
 ## Data flow
 
