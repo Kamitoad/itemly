@@ -33,5 +33,8 @@ export interface StoredReceipt {
   confirmedAt: string | null;
   draft: ReceiptDraft;
   attachment: AttachmentToken | null;
+  // Read-time warning only; never persisted or included in the backup schema.
+  // Web image requests can fail later and are handled by the image component.
+  attachmentWarning?: "unavailable";
   calculations: ReceiptCalculations;
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { createEmptyDraft, createEmptyItem, type SaveReceiptRequest } from "../shared/receipt.js";
 import { applyCurrencyPreference, confirmCurrency, UNKNOWN_CURRENCY } from "../shared/currency.js";
@@ -244,10 +245,13 @@ describe("transactional receipt persistence", () => {
   });
 
   it("restores a checkpointed SQLite backup", () => {
-    const id = saveReceipt(db, validRequest());
+    const request = validRequest();
+    const checksum = createHash("sha256").update("receipt-image").digest("hex");
+    request.attachment = { ...request.attachment!, sha256: checksum, token: `${checksum}.jpg` };
+    const id = saveReceipt(db, request);
     const uploadDirectory = join(directory, "receipts");
     mkdirSync(uploadDirectory);
-    const attachmentName = `${"a".repeat(64)}.jpg`;
+    const attachmentName = `${checksum}.jpg`;
     writeFileSync(join(uploadDirectory, attachmentName), Buffer.from("receipt-image"));
     db.exec("PRAGMA wal_checkpoint(FULL)");
     const backup = createBackupPayload(databasePath, uploadDirectory);
@@ -257,5 +261,35 @@ describe("transactional receipt persistence", () => {
     db = openDatabase(join(restoredDirectory, "receipts.sqlite"));
     expect(getReceipt(db, id)?.draft.items[0].normalizedName).toBe("Large Eggs");
     expect(readFileSync(join(restoredDirectory, "receipts", attachmentName), "utf8")).toBe("receipt-image");
+  });
+
+  it.each([false, true])("keeps web receipt data and evidence accessible without an image (trash=%s), but rejects full export", (trash) => {
+    const request = validRequest();
+    const extractionId = crypto.randomUUID();
+    storePendingExtraction(db, { id: extractionId, provider: "chatgpt-paste", model: null, status: "completed", rawResult: { original: "Unchanged" }, uncertaintyFields: [], validationErrors: [] });
+    request.extractionId = extractionId;
+    const id = saveReceipt(db, request);
+    if (trash) changeReceiptDeleted(db, id, { clientMutationId: crypto.randomUUID(), expectedRevision: 1 }, true);
+    const before = getReceipt(db, id)!;
+    // There has never been a file at this reference; no image read occurs here.
+    expect(before.draft.items).toEqual(request.draft.items);
+    expect(before.attachment).toEqual(request.attachment);
+    expect(before.extractions[0].rawResult).toEqual({ original: "Unchanged" });
+    expect(listReceipts(db, "Walmart", trash)).toHaveLength(1);
+    db.exec("PRAGMA wal_checkpoint(FULL)");
+    expect(() => createBackupPayload(databasePath, join(directory, "receipts"))).toThrow("Bonbild fehlt");
+    const uploadDirectory = join(directory, "receipts");
+    mkdirSync(uploadDirectory);
+    writeFileSync(join(uploadDirectory, request.attachment!.token), "corrupt-image");
+    expect(() => createBackupPayload(databasePath, uploadDirectory)).toThrow("beschädigt");
+    expect(getReceipt(db, id)).toEqual(before);
+  });
+
+  it("exports a web receipt created without an image normally", () => {
+    const request = { ...validRequest(), attachment: null };
+    const id = saveReceipt(db, request);
+    db.exec("PRAGMA wal_checkpoint(FULL)");
+    expect(getReceipt(db, id)?.attachment).toBeNull();
+    expect(createBackupPayload(databasePath, join(directory, "receipts")).attachments).toEqual([]);
   });
 });

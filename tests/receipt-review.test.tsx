@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../src/App.js";
 import * as api from "../src/api.js";
@@ -71,6 +71,85 @@ async function replace(user: User, input: HTMLInputElement, text: string) {
 }
 
 describe("rendered receipt review", () => {
+  async function openDetail(receipt: StoredReceipt, trash = false) {
+    const entry = { id: receipt.id, merchantName: receipt.draft.merchantName, purchasedDate: null, purchasedTime: null, scannedAt: receipt.scannedAt, totalMinor: receipt.draft.totalMinor, currency: "CAD", positionCount: 1, status: receipt.status, validationState: receipt.validationState };
+    vi.mocked(api.loadHistory).mockImplementation(async (_search, requestedTrash = false) => ({ receipts: requestedTrash === trash ? [entry] : [] }));
+    vi.mocked(api.loadReceipt).mockResolvedValue({ receipt });
+    const user = startApp();
+    if (trash) await user.click(screen.getByRole("button", { name: "Papierkorb" }));
+    await user.click(await screen.findByRole("button", { name: /Testmarkt/ }));
+    await screen.findByRole("heading", { name: "Bonangaben" });
+    return user;
+  }
+
+  function imageReceipt(): StoredReceipt {
+    return { ...stored(exampleDraft()), attachment: { token: `${"a".repeat(64)}.jpg`, sha256: "a".repeat(64), mimeType: "image/jpeg", originalName: "receipt.jpg", imageUrl: `/uploads/${"a".repeat(64)}.jpg` } };
+  }
+
+  it.each([false, true])("shows receipt data and a German placeholder for native read failure (trash=%s)", async (trash) => {
+    const receipt: StoredReceipt = { ...imageReceipt(), deletedAt: trash ? "2026-10-11T12:00:00Z" : null, attachmentWarning: "unavailable" };
+    receipt.attachment!.imageUrl = "";
+    const original = structuredClone(receipt);
+    await openDetail(receipt, trash);
+    expect(screen.getByRole("heading", { name: "Originalbild nicht verfügbar" })).toBeTruthy();
+    expect(screen.queryByRole("img", { name: "Gespeicherter Originalbon" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Testmarkt" })).toBeTruthy();
+    expect(screen.getByText("Kaffee")).toBeTruthy();
+    expect(screen.getAllByText(/1,29/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Bestätigt")).toBeTruthy();
+    expect(screen.getByText(/gespeicherte Bildzuordnung bleibt erhalten/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: trash ? "Beleg wiederherstellen" : "Beleg bearbeiten" })).toBeTruthy();
+    expect(receipt).toEqual(original);
+  });
+
+  it("handles web HTTP/decode image errors without losing receipt data or leaking warning state to a reopened image", async () => {
+    const receipt = imageReceipt();
+    const original = structuredClone(receipt);
+    const user = await openDetail(receipt);
+    fireEvent.error(screen.getByRole("img", { name: "Gespeicherter Originalbon" }));
+    expect(screen.getByRole("heading", { name: "Originalbild nicht verfügbar" })).toBeTruthy();
+    expect(screen.getByText("Kaffee")).toBeTruthy();
+    expect(receipt).toEqual(original);
+    await user.click(screen.getByRole("button", { name: /Zum Verlauf/ }));
+    await user.click(await screen.findByRole("button", { name: /Testmarkt/ }));
+    expect(await screen.findByRole("img", { name: "Gespeicherter Originalbon" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Originalbild nicht verfügbar" })).toBeNull();
+  });
+
+  it.each([false, true])("displays normal details without a warning (hasImage=%s)", async (hasImage) => {
+    await openDetail(hasImage ? imageReceipt() : stored(exampleDraft()));
+    expect(Boolean(screen.queryByRole("img", { name: "Gespeicherter Originalbon" }))).toBe(hasImage);
+    expect(screen.queryByRole("heading", { name: "Originalbild nicht verfügbar" })).toBeNull();
+    expect(screen.getByText("Kaffee")).toBeTruthy();
+  });
+
+  it("allows editing receipt data while retaining unavailable-image evidence in the returned detail", async () => {
+    const receipt: StoredReceipt = { ...imageReceipt(), attachmentWarning: "unavailable" };
+    receipt.attachment!.imageUrl = "";
+    vi.mocked(api.updateReceipt).mockImplementation(async (id, input) => ({ id, receipt: { ...receipt, draft: input.draft, revision: 2 } }));
+    const user = await openDetail(receipt);
+    await user.click(screen.getByRole("button", { name: "Beleg bearbeiten" }));
+    await user.type(screen.getByRole("textbox", { name: "Weitere Informationen" }), "Bild fehlt, Daten geprüft");
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    await user.click(screen.getByRole("button", { name: "Änderungen speichern" }));
+    await screen.findByRole("heading", { name: "Originalbild nicht verfügbar" });
+    expect(screen.getByText("Bild fehlt, Daten geprüft")).toBeTruthy();
+    expect(vi.mocked(api.updateReceipt).mock.calls[0][0]).toBe(receipt.id);
+    expect(api.saveReceipt).not.toHaveBeenCalled();
+    expect(receipt.attachment!.sha256).toBe("a".repeat(64));
+  });
+
+  it("reports receipt-load errors rather than turning them into an image placeholder", async () => {
+    const receipt = stored(exampleDraft());
+    vi.mocked(api.loadHistory).mockResolvedValue({ receipts: [{ id: receipt.id, merchantName: "Testmarkt", purchasedDate: null, purchasedTime: null, scannedAt: receipt.scannedAt, totalMinor: 129, currency: "CAD", positionCount: 1, status: "confirmed", validationState: "balanced" }] });
+    vi.mocked(api.loadReceipt).mockRejectedValue(new Error("Datenbank nicht verfügbar"));
+    const user = startApp();
+    await user.click(await screen.findByRole("button", { name: /Testmarkt/ }));
+    expect(await screen.findByText("Datenbank nicht verfügbar")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Originalbild nicht verfügbar" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Deine Bons" })).toBeTruthy();
+  });
+
   it.each(["Stückpreis", "Positionssumme", "Gedruckte Zwischensumme", "Rabatte auf den Gesamtbon", "Steuern (GST/PST)", "Gedruckter Gesamtbetrag"])("preserves partial input and caret in %s through parent updates", async (label) => {
     const { user } = await openImportedReview();
     // Use the exact label rather than parsing punctuation in a regular expression.

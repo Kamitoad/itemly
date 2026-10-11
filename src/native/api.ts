@@ -241,12 +241,19 @@ async function ensureImageSaved(attachment: AttachmentToken): Promise<void> {
   await verifyStoredImage(imagePath(attachment.token), attachment.sha256);
 }
 
-async function storedAttachment(value: string | null): Promise<AttachmentToken | null> {
-  if (!value) return null;
+async function storedAttachment(value: string | null): Promise<Pick<StoredReceipt, "attachment" | "attachmentWarning">> {
+  if (value === null) return { attachment: null };
+  // Stored JSON/schema/path errors remain receipt errors, not image warnings.
   const attachment = attachmentTokenSchema.parse(JSON.parse(value));
-  const { data } = await Filesystem.readFile({ path: imagePath(attachment.token), directory: Directory.Data });
-  if (typeof data !== "string") throw new Error("Das gespeicherte Bonbild konnte nicht gelesen werden.");
-  return { ...attachment, imageUrl: `data:${attachment.mimeType};base64,${data}` };
+  const path = imagePath(attachment.token);
+  try {
+    const { data } = await Filesystem.readFile({ path, directory: Directory.Data });
+    if (typeof data !== "string" || data.length === 0) throw new Error("Unreadable image bytes");
+    return { attachment: { ...attachment, imageUrl: `data:${attachment.mimeType};base64,${data}` } };
+  } catch {
+    // Keep all attachment metadata. Only the transient display URL is absent.
+    return { attachment: { ...attachment, imageUrl: "" }, attachmentWarning: "unavailable" };
+  }
 }
 
 async function mapReceipt(row: ReceiptRow): Promise<StoredReceipt> {
@@ -260,7 +267,7 @@ async function mapReceipt(row: ReceiptRow): Promise<StoredReceipt> {
     scannedAt: row.scanned_at,
     confirmedAt: row.confirmed_at,
     draft,
-    attachment: await storedAttachment(row.attachment_json),
+    ...await storedAttachment(row.attachment_json),
     calculations: calculateReceipt(draft)
   };
 }
