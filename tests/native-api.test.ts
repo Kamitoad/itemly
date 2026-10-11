@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DatabaseSync } from "node:sqlite";
-import { createEmptyDraft, createEmptyItem, createUuid } from "../shared/receipt.js";
+import { calculateReceipt, createEmptyDraft, createEmptyItem, createUuid } from "../shared/receipt.js";
 import { applyCurrencyPreference, confirmCurrency } from "../shared/currency.js";
 import { parseNativeBackup } from "../shared/native-backup.js";
 import { receiptValidationCases, validationDraft } from "./receipt-validation-cases.js";
@@ -21,7 +21,8 @@ const state = vi.hoisted(() => ({
   db: null as DatabaseSync | null,
   records: [] as TestRow[],
   images: new Map<string, string>(),
-  failImageWrite: false
+  failImageWrite: false,
+  unreadableImage: null as "permission" | "blob" | "empty" | null
 }));
 
 vi.mock("@capacitor-community/sqlite", async () => ({
@@ -62,6 +63,9 @@ vi.mock("@capacitor/filesystem", () => ({
       return { size: state.images.get(path)!.length };
     },
     readFile: async ({ path }: { path: string }) => {
+      if (state.unreadableImage === "permission") throw new Error("Permission denied");
+      if (state.unreadableImage === "blob") return { data: new Blob(["image"]) };
+      if (state.unreadableImage === "empty") return { data: "" };
       const data = state.images.get(path);
       if (!data) throw new Error("File not found");
       return { data };
@@ -79,6 +83,7 @@ beforeEach(() => {
   state.db?.exec("DELETE FROM receipt_audit_events; DELETE FROM receipt_mutations; DELETE FROM receipts;");
   state.records.length = 0;
   state.images.clear();
+  state.unreadableImage = null;
 });
 
 describe("phone-local receipt adapter", () => {
@@ -123,6 +128,69 @@ describe("phone-local receipt adapter", () => {
     state.db!.exec("DELETE FROM receipt_audit_events; DELETE FROM receipt_mutations; DELETE FROM receipts;");
     state.images.clear();
   }
+
+  it.each(["missing", "permission", "blob", "empty"] as const)("keeps active and trashed receipt data accessible with %s image bytes", async (failure) => {
+    const backup = await createBackupFixture();
+    const imageRow = backup.receipts.find((row) => row.attachment_json)!;
+    const originalAttachment = JSON.parse(imageRow.attachment_json!);
+    const originalDraft = JSON.parse(imageRow.draft_json);
+    const databaseSnapshot = () => ({
+      receipts: state.db!.prepare("SELECT * FROM receipts ORDER BY id").all(),
+      audit: state.db!.prepare("SELECT * FROM receipt_audit_events ORDER BY id").all(),
+      mutations: state.db!.prepare("SELECT * FROM receipt_mutations ORDER BY id").all()
+    });
+    const before = databaseSnapshot();
+    if (failure === "missing") state.images.delete(`receipts/${originalAttachment.token}`);
+    else state.unreadableImage = failure;
+
+    expect((await nativeApi.loadHistory("Original shop", true)).receipts).toHaveLength(1);
+    const { receipt } = await nativeApi.loadReceipt(imageRow.id);
+    expect(receipt).toMatchObject({ id: imageRow.id, revision: imageRow.revision, deletedAt: imageRow.deleted_at, status: imageRow.status, attachmentWarning: "unavailable" });
+    expect(receipt.draft).toEqual(originalDraft);
+    expect(receipt.calculations).toEqual(calculateReceipt(originalDraft));
+    expect(receipt.attachment).toEqual({ ...originalAttachment, imageUrl: "" });
+    expect(databaseSnapshot()).toEqual(before);
+    await expect(nativeApi.createNativeBackup(backup.preferences)).rejects.toThrow();
+    expect(databaseSnapshot()).toEqual(before);
+
+    // Restore/edit/trash must retain the reference, not turn the receipt image-less.
+    const restored = await nativeApi.changeReceiptDeleted(imageRow.id, { clientMutationId: createUuid(), expectedRevision: imageRow.revision }, false);
+    expect(restored.receipt.attachmentWarning).toBe("unavailable");
+    expect((await nativeApi.loadHistory("Original shop")).receipts).toHaveLength(1);
+    const edited = await nativeApi.updateReceipt(imageRow.id, { clientMutationId: createUuid(), expectedRevision: restored.receipt.revision, status: "confirmed", draft: { ...receipt.draft, notes: "Still editable" } });
+    expect(edited.receipt).toMatchObject({ attachment: { ...originalAttachment, imageUrl: "" }, attachmentWarning: "unavailable", draft: { notes: "Still editable", items: originalDraft.items, totalMinor: originalDraft.totalMinor } });
+    await nativeApi.changeReceiptDeleted(imageRow.id, { clientMutationId: createUuid(), expectedRevision: edited.receipt.revision }, true);
+    const after = state.db!.prepare("SELECT * FROM receipts WHERE id = ?").get(imageRow.id) as TestRow;
+    expect(after.attachment_json).toBe(imageRow.attachment_json);
+    expect(after.image_sha256).toBe(imageRow.image_sha256);
+    expect(after.extraction_json).toBe(imageRow.extraction_json);
+    await expect(nativeApi.createNativeBackup(backup.preferences)).rejects.toThrow();
+  });
+
+  it("returns readable images normally and does not flag receipts created without an image", async () => {
+    const backup = await createBackupFixture();
+    for (const row of backup.receipts) {
+      const { receipt } = await nativeApi.loadReceipt(row.id);
+      expect(receipt.attachmentWarning).toBeUndefined();
+      if (row.attachment_json) expect(receipt.attachment?.imageUrl).toBe(`data:${backup.images[0].mimeType};base64,${backup.images[0].dataBase64}`);
+      else expect(receipt.attachment).toBeNull();
+    }
+    expect((await nativeApi.createNativeBackup(backup.preferences)).images).toEqual(backup.images);
+  });
+
+  it.each(["draft_json", "attachment_json"] as const)("does not swallow invalid %s or database errors as image warnings", async (column) => {
+    const backup = await createBackupFixture();
+    const row = backup.receipts.find((value) => value.attachment_json)!;
+    const original = row[column];
+    for (const invalid of ["{broken", "{}", ""]) {
+      state.db!.prepare(`UPDATE receipts SET ${column} = ? WHERE id = ?`).run(invalid, row.id);
+      await expect(nativeApi.loadReceipt(row.id)).rejects.toThrow();
+    }
+    state.db!.prepare(`UPDATE receipts SET ${column} = ? WHERE id = ?`).run(original, row.id);
+    const query = vi.spyOn(state.db!, "prepare").mockImplementation(() => { throw new Error("Database unavailable"); });
+    try { await expect(nativeApi.loadReceipt(row.id)).rejects.toThrow("Database unavailable"); }
+    finally { query.mockRestore(); }
+  });
 
   it("round-trips complete backups including trash, exact quantities, original extraction and audit history", async () => {
     const backup = await createBackupFixture();

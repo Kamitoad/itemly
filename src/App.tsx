@@ -12,6 +12,7 @@ import { copyText } from "./clipboard";
 import BackupPanel from "./BackupPanel";
 import ReviewScreen from "./review/ReviewScreen.js";
 import StatusPill from "./components/StatusPill.js";
+import ReceiptImage from "./components/ReceiptImage.js";
 import { ReceiptIcon, ReceiptLargeIcon, CameraIcon, ImageIcon, CheckIcon, AlertIcon, ArrowIcon, ShieldIcon, LockIcon, HistoryIcon, ChevronIcon, DatabaseIcon, DownloadIcon, SearchIcon, CodeIcon, SunIcon, MoonIcon } from "./components/icons.js";
 import { Capacitor } from "@capacitor/core";
 import { groupHistoryEntries } from "./history";
@@ -680,7 +681,7 @@ function DetailScreen({ receipt, onBack, onNew, onEdit, onDelete, onRestore, sav
       </div>
       <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} currencyNeedsReview={needsCurrencyReview(draft)} />
       <div className="detail-grid">
-        {receipt.attachment && <div className="detail-image"><img src={receipt.attachment.imageUrl} alt="Gespeicherter Originalbon" /></div>}
+        {receipt.attachment && <ReceiptImage key={`${receipt.id}:${receipt.attachment.imageUrl}`} attachment={receipt.attachment} warning={receipt.attachmentWarning} />}
         <div className="detail-facts section-card">
           <h2>Bonangaben</h2>
           <dl>

@@ -89,6 +89,8 @@ The generated Android project uses the application ID `com.kamitoad.itemly`. No 
 
 ## Storage and privacy
 
+If a saved original image is missing, unreadable, or cannot be displayed, the receipt detail still shows its valid items, totals, metadata, and review state with **Originalbild nicht verfügbar**. The stored image reference, checksum, and extraction evidence are not removed. Receipts originally created without an image show no missing-image warning. Database/schema failures remain errors. A full backup still requires the original image and fails if it is absent or invalid; this fallback does not enable partial backups or web-to-Android migration. See #32 and the separate device checks in [Testing](TESTING.md#unavailable-original-images--issue-32).
+
 - SQLite stores the validated draft, review state, and original imported JSON on the phone. Selected receipt image bytes are stored in the app's private data directory, addressed by SHA-256.
 - Android uses the native Camera and Photo Picker instead of a WebView file input. It reads the returned app-accessible image URI immediately and copies the image bytes into private storage before the user switches to ChatGPT or imports JSON. The native picker may process an image; byte-for-byte identity with the source gallery file is not guaranteed. A failed image read leaves the JSON-only import available. Unreferenced image copies from interrupted/abandoned captures are removed on a later app start once they are at least a day old.
 - The Android adapter does not call `/api` or the PC server for capture, import, save, search, or detail views.
