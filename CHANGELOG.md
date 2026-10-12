@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- The main save button remains available for receipts with arithmetic discrepancies or unresolved currency. It opens an explicit warning and can save the entered values as a draft without rewriting printed totals or original extraction evidence; balanced reviewed receipts still save as confirmed. Tracked in #24; browser and Samsung acceptance remain separate.
 - Stored receipt data remains accessible when an Android image read fails or a web/native image cannot be displayed. A German placeholder distinguishes unavailable images from image-less receipts; attachment references and extraction evidence are retained. Web full exports now reject missing or checksum-mismatched referenced images; Android backup validation remains strict. Tracked in #32; physical-device acceptance is pending.
 - Money fields preserve partial input while typing and format only when leaving the field, allowing corrections such as 1,29 to 1,32 without automatic completion. Invalid amounts are shown explicitly and cannot silently retain an earlier valid value.
 - README Android backup guidance now distinguishes implemented export/restore, pending physical-device acceptance, and unsupported webserver-to-Android backup migration.

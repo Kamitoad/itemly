@@ -1,12 +1,33 @@
 // @vitest-environment jsdom
 import { StrictMode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../src/App.js";
 import * as api from "../src/api.js";
 import { calculateReceipt, createEmptyDraft, createEmptyItem, createUuid, type ReceiptDraft } from "../shared/receipt.js";
 import type { StoredReceipt } from "../src/api.js";
+import { receiptValidationState } from "../shared/receipt-validation.js";
+
+// jsdom has no native dialog lifecycle. Simulate only opening/closing and the
+// initial focus; real modal focus trapping, Escape and touch need browser checks.
+const dialogDescriptors = ["showModal", "close"].map((name) => [name, Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, name)] as const);
+beforeAll(() => {
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function (this: HTMLDialogElement) {
+    this.open = true;
+    this.querySelector<HTMLElement>("[autofocus]")?.focus();
+  } });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value: function (this: HTMLDialogElement) {
+    this.open = false;
+    this.dispatchEvent(new Event("close"));
+  } });
+});
+afterAll(() => {
+  for (const [name, descriptor] of dialogDescriptors) {
+    if (descriptor) Object.defineProperty(HTMLDialogElement.prototype, name, descriptor);
+    else Reflect.deleteProperty(HTMLDialogElement.prototype, name);
+  }
+});
 
 // Only persistence/platform boundaries are mocked. App navigation, parent state,
 // review controls, money inputs, and the save-screen guard are real React UI.
@@ -24,8 +45,8 @@ function exampleDraft(): ReceiptDraft {
   return { ...createEmptyDraft("CAD"), merchantName: "Testmarkt", items: [item], subtotalMinor: 129, receiptDiscountMinor: 0, taxTotalMinor: 0, totalMinor: 129, fieldSources: { totalMinor: "extracted" } };
 }
 
-function stored(draft: ReceiptDraft, id = createUuid(), revision = 1): StoredReceipt {
-  return { id, revision, deletedAt: null, status: "confirmed", validationState: "balanced", scannedAt: "2026-10-08T12:00:00Z", confirmedAt: "2026-10-08T12:00:00Z", draft, attachment: null, calculations: calculateReceipt(draft) };
+function stored(draft: ReceiptDraft, id = createUuid(), revision = 1, status: StoredReceipt["status"] = "confirmed"): StoredReceipt {
+  return { id, revision, deletedAt: null, status, validationState: receiptValidationState(draft), scannedAt: "2026-10-08T12:00:00Z", confirmedAt: status === "confirmed" ? "2026-10-08T12:00:00Z" : null, draft, attachment: null, calculations: calculateReceipt(draft) };
 }
 
 beforeEach(() => {
@@ -35,8 +56,8 @@ beforeEach(() => {
   vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
   vi.mocked(api.loadConfig).mockResolvedValue({ extractionMode: "manual", provider: "manual", model: null, disclosure: "" });
   vi.mocked(api.loadHistory).mockResolvedValue({ receipts: [] });
-  vi.mocked(api.saveReceipt).mockImplementation(async (input) => ({ id: "new-receipt", receipt: stored(input.draft, "new-receipt") }));
-  vi.mocked(api.updateReceipt).mockImplementation(async (id, input) => ({ id, receipt: stored(input.draft, id, input.expectedRevision + 1) }));
+  vi.mocked(api.saveReceipt).mockImplementation(async (input) => ({ id: "new-receipt", receipt: stored(input.draft, "new-receipt", 1, input.status) }));
+  vi.mocked(api.updateReceipt).mockImplementation(async (id, input) => ({ id, receipt: stored(input.draft, id, input.expectedRevision + 1, input.status) }));
 });
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -222,13 +243,135 @@ describe("rendered receipt review", () => {
     expect(money("Gedruckter Gesamtbetrag").value).toBe("1,29");
     expect(screen.getByText("Prüfung erforderlich")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Weiter" }));
-    expect(screen.getByRole("button", { name: "Einkauf speichern" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Einkauf speichern" }).hasAttribute("disabled")).toBe(false);
     await user.click(screen.getByRole("button", { name: "Zurück zur Prüfung" }));
     await replace(user, money("Gedruckter Gesamtbetrag"), "1,32");
     await user.click(screen.getByRole("button", { name: "Weiter" }));
     await user.click(screen.getByRole("button", { name: "Einkauf speichern" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(api.saveReceipt).toHaveBeenCalledOnce());
     expect(vi.mocked(api.saveReceipt).mock.calls[0][0]).toMatchObject({ status: "confirmed", extractionId, draft: { totalMinor: 132, items: [{ rawName: "COFFEE RAW", lineTotalMinor: 132, verified: false }] } });
+  });
+
+  it("warns before saving different item totals and lets cancellation retain the correction", async () => {
+    const original = exampleDraft();
+    const snapshot = structuredClone(original);
+    const { user } = await openImportedReview(original);
+    await replace(user, money("Positionssumme"), "1,32");
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    await user.click(screen.getByRole("button", { name: "Einkauf speichern" }));
+    const dialog = screen.getByRole("dialog", { name: "Beleg mit Prüfbedarf speichern?" });
+    expect(within(dialog).getByText(/als Entwurf gespeichert/)).toBeTruthy();
+    expect(within(dialog).getByText(/1,29/)).toBeTruthy();
+    expect(within(dialog).getByText(/1,32/)).toBeTruthy();
+    expect(api.saveReceipt).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Zurück zur Prüfung" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(money("Positionssumme").value).toBe("1,32");
+    expect(money("Gedruckter Gesamtbetrag").value).toBe("1,29");
+    expect(api.saveReceipt).not.toHaveBeenCalled();
+    expect(original).toEqual(snapshot);
+  });
+
+  it("saves and reopens a corrected unbalanced import as a draft without rewriting printed evidence", async () => {
+    const original = exampleDraft();
+    const { user, extractionId } = await openImportedReview(original);
+    await replace(user, money("Positionssumme"), "1,32");
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    await user.click(screen.getByRole("button", { name: "Einkauf speichern" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Trotzdem als Entwurf speichern" }));
+    await waitFor(() => expect(api.saveReceipt).toHaveBeenCalledOnce());
+    const input = vi.mocked(api.saveReceipt).mock.calls[0][0];
+    expect(input).toMatchObject({ status: "draft", extractionId, draft: { totalMinor: 129, subtotalMinor: 129, fieldSources: { totalMinor: "extracted" }, items: [{ id: original.items[0].id, rawName: "COFFEE RAW", quantity: "1.000001", lineTotalMinor: 132, source: "user_entered", verified: false }] } });
+    expect(screen.getByText("Entwurf wurde gespeichert.")).toBeTruthy();
+    const receipt = stored(input.draft, "new-receipt", 1, "draft");
+    vi.mocked(api.loadReceipt).mockResolvedValue({ receipt });
+    vi.mocked(api.loadHistory).mockResolvedValue({ receipts: [{ id: receipt.id, merchantName: "Testmarkt", purchasedDate: null, purchasedTime: null, scannedAt: receipt.scannedAt, totalMinor: 129, currency: "CAD", positionCount: 1, status: "draft", validationState: "discrepancy" }] });
+    await user.click(screen.getByRole("button", { name: /Zum Verlauf/ }));
+    await user.click(await screen.findByRole("button", { name: /Testmarkt/ }));
+    expect(screen.getByText("Entwurf")).toBeTruthy();
+    expect(screen.getByText("Prüfung erforderlich")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Beleg bearbeiten" }));
+    expect(money("Positionssumme").value).toBe("1,32");
+    expect(money("Gedruckter Gesamtbetrag").value).toBe("1,29");
+    expect(original.items[0].lineTotalMinor).toBe(129);
+  });
+
+  it("updates an existing receipt as a draft after acknowledging the warning without creating another receipt", async () => {
+    const original = stored(exampleDraft());
+    const snapshot = structuredClone(original);
+    const user = await openDetail(original);
+    await user.click(screen.getByRole("button", { name: "Beleg bearbeiten" }));
+    await replace(user, money("Positionssumme"), "1,32");
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    await user.click(screen.getByRole("button", { name: "Änderungen speichern" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/bestehenden Beleg/)).toBeTruthy();
+    expect(api.updateReceipt).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Trotzdem als Entwurf speichern" }));
+    await waitFor(() => expect(api.updateReceipt).toHaveBeenCalledOnce());
+    expect(vi.mocked(api.updateReceipt).mock.calls[0]).toMatchObject([original.id, { expectedRevision: 1, status: "draft", draft: { totalMinor: 129, items: [{ id: original.draft.items[0].id, lineTotalMinor: 132 }] } }]);
+    expect(api.saveReceipt).not.toHaveBeenCalled();
+    expect(original).toEqual(snapshot);
+    expect(screen.getByText("Entwurf")).toBeTruthy();
+    expect(screen.getByText("Prüfung erforderlich")).toBeTruthy();
+  });
+
+  it("dismisses the warning without saving and restores focus to the save button", async () => {
+    const { user } = await openImportedReview({ ...exampleDraft(), totalMinor: 130 });
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    const trigger = screen.getByRole("button", { name: "Einkauf speichern" });
+    await user.click(trigger);
+    const dialog = screen.getByRole("dialog");
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Zurück zur Prüfung" }));
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(api.saveReceipt).not.toHaveBeenCalled();
+    await user.click(trigger);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("offers a draft warning for an unresolved currency instead of silently confirming it", async () => {
+    const draft = exampleDraft();
+    draft.fieldSources.currency = "uncertain";
+    const { user } = await openImportedReview(draft);
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    await user.click(screen.getByRole("button", { name: "Einkauf speichern" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText(/Währung muss noch/)).toBeTruthy();
+    expect(api.saveReceipt).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Trotzdem als Entwurf speichern" }));
+    await waitFor(() => expect(api.saveReceipt).toHaveBeenCalledOnce());
+    expect(vi.mocked(api.saveReceipt).mock.calls[0][0]).toMatchObject({ status: "draft", draft: { currency: "CAD", fieldSources: { currency: "uncertain" } } });
+  });
+
+  it("retains missing printed totals when explicitly saving an incomplete draft", async () => {
+    const { user } = await openImportedReview({ ...exampleDraft(), totalMinor: null });
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    await user.click(screen.getByRole("button", { name: "Einkauf speichern" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("Angaben unvollständig")).toBeTruthy();
+    await user.click(within(dialog).getByRole("button", { name: "Trotzdem als Entwurf speichern" }));
+    await waitFor(() => expect(api.saveReceipt).toHaveBeenCalledOnce());
+    expect(vi.mocked(api.saveReceipt).mock.calls[0][0]).toMatchObject({ status: "draft", draft: { totalMinor: null } });
+  });
+
+  it("retains corrected data and the mutation identity after a failed warned draft save", async () => {
+    const { user } = await openImportedReview();
+    await replace(user, money("Positionssumme"), "1,32");
+    vi.mocked(api.saveReceipt).mockRejectedValueOnce(new Error("Speicher nicht verfügbar"));
+    await user.click(screen.getByRole("button", { name: "Weiter" }));
+    await user.click(screen.getByRole("button", { name: "Einkauf speichern" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Trotzdem als Entwurf speichern" }));
+    await screen.findByText("Speicher nicht verfügbar");
+    const firstInput = vi.mocked(api.saveReceipt).mock.calls[0][0];
+    expect(firstInput.status).toBe("draft");
+    await user.click(screen.getByRole("button", { name: "Einkauf speichern" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Trotzdem als Entwurf speichern" }));
+    await waitFor(() => expect(api.saveReceipt).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.saveReceipt).mock.calls[1][0]).toEqual(firstInput);
+    expect(firstInput.draft).toMatchObject({ totalMinor: 129, items: [{ lineTotalMinor: 132 }] });
   });
 
   it.each(["abc", "-", "9007199254740992"])("rejects invalid final input %s without falling back to a previous price", async (text) => {
