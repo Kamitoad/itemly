@@ -579,6 +579,26 @@ function SaveScreen({ draft, imageUrl, onBack, onSave, saving, editing }: {
 }) {
   const calculations = calculateReceipt(draft);
   const currencyNeedsReview = needsCurrencyReview(draft);
+  const [showSaveWarning, setShowSaveWarning] = useState(false);
+  const warningDialog = useRef<HTMLDialogElement>(null);
+  const saveButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!showSaveWarning) return;
+    const dialog = warningDialog.current;
+    const trigger = saveButton.current;
+    if (!dialog) return;
+    dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+      if (trigger?.isConnected) trigger.focus();
+    };
+  }, [showSaveWarning]);
+
+  function requestSave() {
+    if (calculations.isBalanced && !currencyNeedsReview) onSave("confirmed");
+    else setShowSaveWarning(true);
+  }
+
   return (
     <section className="page narrow save-page">
       <div className="eyebrow">Letzte Kontrolle</div>
@@ -590,14 +610,29 @@ function SaveScreen({ draft, imageUrl, onBack, onSave, saving, editing }: {
         <div className="final-total"><span>Gesamtbetrag</span><strong>{formatMoney(draft.totalMinor, draft.currency)}</strong></div>
         <StatusPill calculations={calculations} uncertaintyCount={draft.uncertaintyFields.length} currencyNeedsReview={currencyNeedsReview} compact />
       </div>
-      {!calculations.isBalanced && <div className="save-warning"><AlertIcon /><p><strong>Noch nicht ausgeglichen</strong><span>Du kannst diesen Einkauf als Entwurf speichern und später ergänzen. Bestätigen ist erst bei übereinstimmenden Beträgen möglich.</span></p></div>}
+      {!calculations.isBalanced && <div className="save-warning"><AlertIcon /><p><strong>Beträge prüfen</strong><span>Du kannst den Beleg trotzdem speichern. Bei einer Abweichung bleibt er als Entwurf gekennzeichnet; deine Werte werden nicht angepasst.</span></p></div>}
       {currencyNeedsReview && <div className="save-warning"><AlertIcon /><p><strong>Währung prüfen</strong><span>Bitte wähle oder bestätige die Währung in der Prüfansicht. Als Entwurf kannst du den Bon bereits speichern.</span></p></div>}
       <div className="save-facts"><span><DatabaseIcon /> SQLite-Datensatz</span><span><ImageIcon /> Originalbild</span><span><DownloadIcon /> Portable JSON-Exporte</span></div>
       <div className="save-buttons">
         <button className="button ghost" onClick={onBack} disabled={saving}>Zurück zur Prüfung</button>
         {(editing || !calculations.isBalanced || currencyNeedsReview) && <button className="button secondary" onClick={() => onSave("draft")} disabled={saving}>{saving ? "Speichert …" : "Als Entwurf speichern"}</button>}
-        <button className="button primary large" onClick={() => onSave("confirmed")} disabled={saving || !calculations.isBalanced || currencyNeedsReview}>{saving ? "Speichert …" : editing ? "Änderungen speichern" : "Einkauf speichern"} {!saving && <CheckIcon />}</button>
+        <button ref={saveButton} className="button primary large" onClick={requestSave} disabled={saving}>{saving ? "Speichert …" : editing ? "Änderungen speichern" : "Einkauf speichern"} {!saving && <CheckIcon />}</button>
       </div>
+      {showSaveWarning && <dialog ref={warningDialog} className="save-warning-dialog" aria-labelledby="save-warning-title" aria-describedby="save-warning-description" onCancel={(event) => { event.preventDefault(); setShowSaveWarning(false); }} onClose={() => setShowSaveWarning(false)}>
+        <h2 id="save-warning-title">Beleg mit Prüfbedarf speichern?</h2>
+        <p id="save-warning-description">Der Beleg wird als Entwurf gespeichert. Deine eingegebenen Preise und die gedruckten Werte bleiben erhalten. Du kannst ihn später weiter prüfen.</p>
+        {!calculations.isBalanced && <dl className="save-warning-totals">
+          <div><dt>Gedruckter Gesamtbetrag</dt><dd>{formatMoney(draft.totalMinor, draft.currency)}</dd></div>
+          <div><dt>Aus deinen Angaben berechnet</dt><dd>{formatMoney(calculations.calculatedTotalMinor, draft.currency)}</dd></div>
+          <div><dt>{calculations.differenceMinor === null ? "Status" : "Differenz"}</dt><dd>{calculations.differenceMinor === null ? "Angaben unvollständig" : formatMoney(calculations.differenceMinor, draft.currency)}</dd></div>
+        </dl>}
+        {currencyNeedsReview && <p>Die Währung muss noch ausgewählt oder bestätigt werden.</p>}
+        {editing && <p>Die Änderungen werden im bestehenden Beleg gespeichert. Sein Status wird auf „Entwurf“ gesetzt.</p>}
+        <div className="save-warning-actions">
+          <button autoFocus className="button secondary" disabled={saving} onClick={() => { setShowSaveWarning(false); onBack(); }}>Zurück zur Prüfung</button>
+          <button className="button primary" disabled={saving} onClick={() => { setShowSaveWarning(false); onSave("draft"); }}>Trotzdem als Entwurf speichern</button>
+        </div>
+      </dialog>}
     </section>
   );
 }
