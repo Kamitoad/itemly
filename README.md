@@ -1,90 +1,50 @@
-# Itemly – Receipt Tracker
+# Itemly
 
 [![CI](https://github.com/Kamitoad/itemly/actions/workflows/ci.yml/badge.svg)](https://github.com/Kamitoad/itemly/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f.svg)](LICENSE)
 
-> Capture receipts privately, review every detail, and store your data locally.
+Itemly turns paper receipts into a searchable purchase history. It's a self-hosted web app with a mobile-first German interface. Record what you bought, check the item prices against the printed total, and keep the receipt data and images on your own computer or home server.
 
-Itemly is a mobile-first, self-hosted web app for structured purchase data. Receipt images and data stay on your own computer by default. You can enter receipts manually, use a free copy-and-paste workflow with a regular ChatGPT chat, or optionally configure an OpenAI-compatible API provider.
+The web app on `main` supports manual and AI-assisted receipt entry, editing saved receipts, and backups. It uses React, TypeScript, Vite, Express, and SQLite. A separate [experimental Android app](#android-prototype) uses Capacitor and stores receipts on the phone.
 
-An experimental Android package is now being developed for phone-local use without a running computer. It is not yet a verified release; see [Android prototype](docs/ANDROID.md) before installing or relying on it.
+**Try it locally** with the [quick start](#quick-start). You'll land in the purchase overview. Select **Neuer Bon** to open the capture screen shown below.
 
-Android now includes **Daten & Sicherung** for user-initiated full export/restore and a separate **Android installable update APK** workflow for durable-signed updates. Signing setup and device acceptance are required; do not alternate durable update APKs with disposable PR artifacts. Android and webserver backups currently use different formats.
+<img src="docs/images/itemly-home.jpg" width="440" alt="Itemly's German capture screen in dark mode with camera, gallery, JSON import, and manual entry options">
 
-![Itemly in dark mode](docs/images/itemly-home.jpg)
+## How it works
 
-## Why Itemly?
-
-Many receipt apps require an account, cloud storage, or a paid AI service. Itemly takes a different approach:
-
-- **Local first:** A SQLite database and original images live in a local data directory.
-- **No recurring AI cost required:** Manual entry and ChatGPT JSON import need no API key.
-- **Review before saving:** Extracted details remain unverified until you check them.
-- **Transparent totals:** Printed values are preserved; discrepancies are shown instead of silently corrected.
-- **Replaceable integrations:** Extraction, file storage, and persistence are separate adapters.
-
-## What v0.1.0 includes
-
-- Camera and gallery selection with preview and explicit consent before external processing
-- Validated JSON import from a regular ChatGPT chat
-- A fully manual workflow without AI access
-- Editing of merchant, item, payment, and total details during review and after saving
-- Item creation, editing, and removal within an existing receipt
-- Receipt trash and restoration without losing original images or extraction evidence
-- Uncertainty markers for extracted items and fields
-- Arithmetic checks for line items, discounts, taxes, deposits, and fees
-- Drafts and atomic, idempotent saves of balanced purchases
-- Local history with search and detail views
-- Single-receipt export, portable export with the original image, and full backup
-- Installable PWA with light and dark themes
+1. **Capture a receipt.** Enter items by hand, optionally attach a photo, or import receipt details as JSON. A configured AI provider can also extract details from a photo in the web app.
+2. **Check the details.** Review or correct the merchant, currency, items, and amounts. Itemly flags uncertain results and shows the calculated total alongside the printed total. Confirming a receipt requires a known currency and balanced totals. Incomplete or unbalanced receipts can be saved as drafts with the discrepancy visible.
+3. **Find and manage your purchases.** Search the history, edit a saved receipt or its items, and move receipts to the recoverable trash. The web app can export a single receipt as JSON, optionally with its image, or back up the entire collection.
 
 ## Quick start
 
-Requirements:
-
-- Node.js 24 or newer
-- pnpm 11.24.0
+Requires Node.js 24 or newer and pnpm 11.24.0.
 
 ```sh
 pnpm install
 pnpm dev
 ```
 
-The development services are then available at:
+Open `http://localhost:5173` (the API runs at `http://localhost:8787`). To try the app without AI, choose **Neuer Bon → Ohne Bild manuell erfassen** and enter a sample purchase. On a phone connected to the same trusted Wi-Fi network, use the network URL printed by the development server.
 
-- Web app: `http://localhost:5173`
-- API: `http://localhost:8787`
-
-To test on a phone connected to the same Wi-Fi network, use the network URL printed by the development server, for example `http://192.168.1.10:5173`.
-
-## Production use
+To serve the built web app instead:
 
 ```sh
 pnpm build
 pnpm start
 ```
 
-The complete app is then served at `http://localhost:8787`.
+The app is then available at `http://localhost:8787`. The browser app can also be installed as a PWA and still uses the self-hosted server. Itemly has no login or access control. Run it on a private computer or trusted network, and do not expose it directly to the public internet. See the [security policy](SECURITY.md).
 
-Itemly v0.1.0 has no user accounts or access control. Run the server only on a private computer or trusted home network unless you add suitable access protection. Do not expose it directly to the public internet.
+## Privacy and optional AI
 
-## Experimental Android build
+The web app stores receipts in SQLite and keeps images on the computer running Itemly. It has no built-in analytics or telemetry. You choose whether to involve an external service.
 
-The Android project is in `android/`. It bundles the React UI and routes receipt capture, manual entry, ChatGPT JSON import, saves, history, and detail views to app-private storage rather than the PC API. After installing Android Studio and its SDK, run `pnpm android:sync`, open the project with `pnpm android:open`, and deploy a debug build to a device. The [Android prototype guide](docs/ANDROID.md) lists the required real-device tests and current limitations. User-initiated Android backup export and restoration are implemented, but acceptance on a physical device is still pending. Existing receipts in the PC database are **not** automatically copied to the phone, and migration from webserver backups to Android is not implemented. The backup formats remain separate; do not treat the prototype as the only copy of important receipts.
+- **Manual entry** requires no AI account or API key. Itemly does not send the receipt to an AI provider in this mode.
+- **ChatGPT JSON import** requires no API key in Itemly. Select **ChatGPT-JSON importieren**, copy the provided prompt, and submit it with the photo in a separate ChatGPT chat. Paste the returned JSON into Itemly, which validates it and presents it for manual review. The upload to ChatGPT is your action and is subject to that service's terms and settings.
+- **Optional web API extraction** sends the selected image to the configured OpenAI-compatible provider only after a notice and your explicit confirmation. The provider's terms govern how it handles the image.
 
-## Capture receipts without an API key
-
-1. Select **ChatGPT-JSON importieren** in Itemly.
-2. Copy the provided prompt template.
-3. Send the template and receipt image in a regular ChatGPT chat.
-4. Paste the returned JSON into Itemly.
-5. Review every value before saving.
-
-This workflow does not use an AI API inside Itemly. Uploading the image to ChatGPT is a separate, deliberate user action. Common copy-and-paste artifacts are repaired, but the data is still fully validated and never automatically marked as reviewed.
-
-## Optional API configuration
-
-Copy `.env.example` to `.env` and configure it as needed:
+For web API extraction, copy [`.env.example`](.env.example) to `.env` and set the provider credentials. Keep `.env` out of version control. The API key stays on the server.
 
 ```dotenv
 OPENAI_API_KEY=
@@ -92,53 +52,38 @@ OPENAI_MODEL=gpt-4.1-mini
 OPENAI_BASE_URL=https://api.openai.com/v1
 ```
 
-The key stays on the server and is never sent to the browser. A receipt image is sent to the configured provider only after an explicit notice. Without a key, manual entry and ChatGPT JSON import remain available.
+See [privacy and data flow](PRIVACY.md) for details on storage, the trash, and external services.
 
-## Local data and backups
+## Back up and restore the web app
 
-By default, Itemly uses `./data`:
+By default, Itemly stores the database at `./data/receipts.sqlite` and the original images in `./data/receipts/`. The `data/` directory and `.env` are excluded from Git. Download a full backup from the purchase overview or via `GET /api/backup`. The backup is unencrypted and may include sensitive receipt images and records in the trash.
 
-- `receipts.sqlite` – relational SQLite database
-- `receipts/` – content-addressed original images
-
-The entire directory and `.env` are excluded from Git. Download a full backup from the purchase overview or through `GET /api/backup`.
-
-To restore a backup:
+Restore into an empty directory:
 
 ```sh
 pnpm restore <backup.json> <empty-destination-directory>
 ```
 
-Then point `DATA_DIR` to the destination directory, start Itemly, and inspect at least one purchase and its image.
+Point `DATA_DIR` to the restored directory, start Itemly, and check that a saved purchase and its original image open correctly.
 
-## Quality checks
+## Android prototype
 
-```sh
-pnpm check
-pnpm build
-```
+The Capacitor development build is designed to capture, edit, save, and search receipts using the phone's app-private SQLite database and image storage. It includes user-initiated JSON backup export and restore into an empty database. Android system cloud backup is disabled. Exported files are unencrypted, and uninstalling removes the app's private data. The web and Android backup formats are separate. Migration from the web database to Android is pending.
 
-Tests cover schema validation, arithmetic, discounts, taxes, fees, uncertainties, duplicate detection, idempotency, transactions, backups, and extraction failures. The same checks run on pushes and pull requests in GitHub Actions.
+- **Automated checks** exercise receipt review and persistence, including Android backup and restore logic with simulated Capacitor services. The Android CI workflow checks native compilation separately.
+- **Build evidence** includes a signed development APK from the repository's [signed build workflow](https://github.com/Kamitoad/itemly/actions/runs/38185223476).
+- **On a physical Samsung device**, [money-field editing was checked](https://github.com/Kamitoad/itemly/issues/23). The broader [device checklist](docs/ANDROID.md#real-device-acceptance-checklist) is still open, including offline capture and restart persistence, backup and restore, and data retention across signed updates.
 
-Rendered React interaction tests also cover receipt review and money-field editing. These DOM tests are distinct from browser layout checks and physical Android acceptance; see [testing and verification](docs/TESTING.md).
+For a local debug build, install Android Studio and its SDK, run `pnpm android:sync` and `pnpm android:open`, and deploy to a device. Follow the [Android guide](docs/ANDROID.md) for signing and backup instructions. Use the same persistent signing key for in-place preview updates and avoid switching between disposable PR APKs and durable builds. Keep another copy of important receipts while recovery and update testing is pending.
 
-## Architecture and project information
+## Development and roadmap
 
-- [Architecture](docs/ARCHITECTURE.md)
-- [Privacy and data flow](PRIVACY.md)
-- [Security policy](SECURITY.md)
-- [Contributing](CONTRIBUTING.md)
-- [Changelog](CHANGELOG.md)
-- [v0.2.0 roadmap](https://github.com/Kamitoad/itemly/issues/8) and [v0.3.0 roadmap](https://github.com/Kamitoad/itemly/issues/21)
+Run `pnpm check` for TypeScript checks and Vitest, and `pnpm build` for the production build. GitHub CI runs both on pull requests and pushes to `main`. The suites cover receipt validation and totals, save and edit behavior, backups and restore, and React interactions in a simulated DOM. See [testing and verification](docs/TESTING.md) for the scope of automated and manual checks.
 
-## Planned improvements
+More detailed uncertainty indicators and easier editing of fees and deposits remain areas for improvement. The [web roadmap](https://github.com/Kamitoad/itemly/issues/8) and [phone-only roadmap](https://github.com/Kamitoad/itemly/issues/21) track further work, including advanced filters, category analysis, and optional encrypted backup destinations.
 
-- Clear details for each uncertain field
-- Editing previously saved purchases
-- A more convenient editor for fees, deposits, and discounts
-- CSV reports and statistics
-- Optional, replaceable backup destinations
+[Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md)
 
 ## License
 
-The source code is available under the [MIT License](LICENSE) © 2026 Chasan Moustafa.
+[MIT License](LICENSE) © 2026 Chasan Moustafa.
